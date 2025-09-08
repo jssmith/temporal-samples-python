@@ -6,7 +6,7 @@ import os
 
 from temporalio.client import Client
 from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
-from temporalio.contrib.openai_agents import StatelessMCPServer
+from temporalio.contrib.openai_agents import StatefulMCPServer
 from agents.mcp import MCPServerStdio
 from temporalio.worker import Worker
 
@@ -17,7 +17,7 @@ async def main():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     samples_dir = os.path.join(current_dir, "sample_files")
 
-    file_system_server = StatelessMCPServer(
+    file_system_server = StatefulMCPServer(
         MCPServerStdio(
             name="FileSystemServer",
             params={"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", samples_dir]},
