@@ -88,49 +88,134 @@ Temporal workflows require manual integration testing with a running Temporal se
 
 #### General Testing Pattern
 
-1. **Identify the worker and starter programs**:
+1. **Pre-flight checks**:
+   ```bash
+   # Verify Temporal server is running (choose one method)
+   curl -s -o /dev/null -w "%{http_code}" http://localhost:8233 | grep -q 200 && echo "Server running" || echo "Server not running"
+   # OR check if gRPC port is open
+   nc -z localhost 7233 && echo "gRPC port open" || echo "gRPC port closed"
+   # OR check process directly
+   ps aux | grep "temporal server start-dev" | grep -v grep && echo "Server process running" || echo "No server process"
+   
+   # Check required environment variables are set (adjust as needed)
+   echo "API Key set: $(echo $OPENAI_API_KEY | head -c 10)..."
+   
+   # Clean any conflicting workflows from previous runs
+   temporal workflow list --limit 5 | grep -q "my-workflow-id" && temporal workflow terminate --workflow-id my-workflow-id
+   ```
+
+2. **Identify the worker and starter programs**:
    - **Worker program**: Registers workflows and activities with Temporal, runs continuously
    - **Starter program**: Executes specific workflows, exits when complete
    - Look for files named `*worker*` or `run_worker*` for workers
    - Look for files named `run_*` or `*client*` for starters
 
-2. **Start the worker** (runs continuously):
+3. **Start the worker with error capture**:
    ```bash
-   # Replace with your package manager and worker path
-   python path/to/worker_program.py
+   # Start worker in background with error logging
+   nohup [package_manager] path/to/worker_program.py > worker.log 2>&1 & echo $!
+   
+   # Verify worker startup (wait 5 seconds, check logs)
+   sleep 5 && (cat worker.log || echo "Worker started successfully")
    ```
 
-3. **In a separate terminal, run the starter program with timeout**:
+4. **Run the starter program with timeout and workflow ID management**:
    ```bash
-   # Replace with your package manager and starter path
-   # Use timeout to prevent hanging tests - adjust time as needed
-   timeout 60s python path/to/starter_program.py
+   # Use timeout to prevent hanging, unique IDs to avoid conflicts
+   timeout 60s [package_manager] path/to/starter_program.py
+   
+   # For scripts with hardcoded workflow IDs, terminate existing workflows first
+   # or modify the script to use unique IDs like: id=f'test-{uuid.uuid4()}'
    ```
 
-4. **Monitor execution**:
-   - **Via Temporal CLI**: `temporal workflow list`, `temporal workflow show --workflow-id [id]`
-   - **Via Web UI**: http://localhost:8233 (default)
-   - **Via program output**: Watch starter program console output
+5. **Monitor execution and diagnose issues**:
+   ```bash
+   # Check workflow status if execution fails
+   temporal workflow show --workflow-id [workflow-id] --detailed
+   
+   # Monitor worker logs for runtime errors
+   tail -f worker.log
+   
+   # Quick process check
+   ps aux | grep [worker_pattern]
+   ```
 
-5. **Handle user input** (if required):
+6. **Handle user input** (if required):
    - Some workflows require interactive input
    - Watch the starter program output for prompts
    - Provide input when requested
 
-6. **Verify completion**:
+7. **Verify completion**:
    - Starter program exits with code 0
    - Expected output is printed to console
    - Workflow shows as "Completed" in Temporal UI
 
-7. **Clean shutdown**: Stop the worker process (Ctrl+C)
+8. **Clean shutdown and cleanup**:
+   ```bash
+   # Stop worker process (use PID from step 3)
+   kill [worker_pid]
+   
+   # Clean up log files
+   rm -f worker.log
+   ```
+
+#### Quick Test Script Pattern
+
+For rapid testing across different repositories, use this template:
+
+```bash
+#!/bin/bash
+# Quick Temporal workflow test - replace variables as needed
+WORKER_CMD="[package_manager] path/to/worker.py"
+STARTER_CMD="[package_manager] path/to/starter.py"
+WORKFLOW_ID="test-workflow-$(date +%s)"
+
+# Pre-flight checks  
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8233 | grep -q 200 || { echo "Start Temporal server first"; exit 1; }
+[[ -n "$REQUIRED_ENV_VAR" ]] || { echo "Set required environment variables"; exit 1; }
+
+# Clean slate
+temporal workflow list --limit 5 | grep -q "$WORKFLOW_ID" && temporal workflow terminate --workflow-id "$WORKFLOW_ID"
+
+# Start worker with logging
+echo "Starting worker..."
+nohup $WORKER_CMD > worker.log 2>&1 & WORKER_PID=$!
+sleep 5
+
+# Check worker startup
+if grep -i "error\|exception\|failed" worker.log; then
+    echo "Worker startup failed - check worker.log"
+    kill $WORKER_PID 2>/dev/null
+    exit 1
+fi
+
+# Run workflow
+echo "Running workflow..."
+if timeout 60s $STARTER_CMD; then
+    echo "✅ Workflow completed successfully"
+    EXIT_CODE=0
+else
+    echo "❌ Workflow failed or timed out"
+    echo "Check: temporal workflow show --workflow-id [id] --detailed"
+    echo "Worker logs:"
+    tail -20 worker.log
+    EXIT_CODE=1
+fi
+
+# Cleanup
+kill $WORKER_PID 2>/dev/null
+rm -f worker.log
+exit $EXIT_CODE
+```
 
 #### Testing Checklist
 
 For each workflow example:
+- [ ] Pre-flight checks pass (server, environment, conflicts)
 - [ ] Worker starts without errors and connects to Temporal server
-- [ ] Worker registers workflows/activities successfully
+- [ ] Worker registers workflows/activities successfully (check worker.log)
 - [ ] Starter program connects to Temporal server
-- [ ] Workflow executes without errors
+- [ ] Workflow executes without errors (check detailed workflow history)
 - [ ] Expected output is produced
 - [ ] Starter program exits with code 0
 - [ ] Worker can be cleanly shut down
@@ -142,8 +227,12 @@ For each workflow example:
 # Ensure Temporal server is running
 temporal server start-dev
 
-# Check server status
-temporal server status
+# Check server status (choose one method)
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8233 | grep -q 200 && echo "Server running" || echo "Server not running"
+# OR check if gRPC port is open
+nc -z localhost 7233 && echo "gRPC port open" || echo "gRPC port closed"
+# OR check process directly  
+ps aux | grep "temporal server start-dev" | grep -v grep || echo "No server process found"
 ```
 
 **Worker conflicts**:
