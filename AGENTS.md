@@ -98,10 +98,20 @@ Temporal workflows require manual integration testing with a running Temporal se
    ps aux | grep "temporal server start-dev" | grep -v grep && echo "Server process running" || echo "No server process"
    
    # Check required environment variables are set (adjust as needed)
-   echo "API Key set: $(echo $OPENAI_API_KEY | head -c 10)..."
+   echo "API Key set: $(echo ${OPENAI_API_KEY:+SET})"
    
-   # Clean any conflicting workflows from previous runs
-   temporal workflow list --limit 5 | grep -q "my-workflow-id" && temporal workflow terminate --workflow-id my-workflow-id
+   # Clean ALL running workflows that might conflict
+   # Method 1: By task queue (recommended)
+   temporal workflow list --limit 50 | grep "your-task-queue" | grep "Running" | awk '{print $2}' | xargs -r -I {} temporal workflow terminate --workflow-id {}
+   
+   # Method 2: By workflow type
+   temporal workflow list --limit 50 | grep "YourWorkflowType" | grep "Running" | awk '{print $2}' | xargs -r -I {} temporal workflow terminate --workflow-id {}
+   
+   # Method 3: Specific workflow ID (for hardcoded IDs)
+   temporal workflow terminate --workflow-id "your-workflow-id" 2>/dev/null || true
+   
+   # Kill any existing workers to avoid conflicts
+   pkill -f "your_worker_pattern" 2>/dev/null || true
    ```
 
 2. **Identify the worker and starter programs**:
@@ -113,19 +123,40 @@ Temporal workflows require manual integration testing with a running Temporal se
 3. **Start the worker with error capture**:
    ```bash
    # Start worker in background with error logging
-   nohup [package_manager] path/to/worker_program.py > worker.log 2>&1 & echo $!
+   nohup [package_manager] path/to/worker_program.py > worker.log 2>&1 & WORKER_PID=$!
+   echo "Worker PID: $WORKER_PID"
    
    # Verify worker startup (wait 5 seconds, check logs)
-   sleep 5 && (cat worker.log || echo "Worker started successfully")
+   sleep 5
+   if grep -i "error\|exception\|failed\|traceback" worker.log; then
+       echo "❌ Worker startup failed - check worker.log"
+       kill $WORKER_PID 2>/dev/null
+       exit 1
+   else
+       echo "✅ Worker started successfully"
+   fi
+   
+   # Optional: Verify worker registered workflows/activities
+   # grep -q "registered.*workflows" worker.log || echo "⚠️  Worker registration unclear"
    ```
 
-4. **Run the starter program with timeout and workflow ID management**:
+4. **Run the starter program with timeout and error handling**:
    ```bash
-   # Use timeout to prevent hanging, unique IDs to avoid conflicts
-   timeout 60s [package_manager] path/to/starter_program.py
-   
-   # For scripts with hardcoded workflow IDs, terminate existing workflows first
-   # or modify the script to use unique IDs like: id=f'test-{uuid.uuid4()}'
+   # Use timeout to prevent hanging workflows
+   if timeout 60s [package_manager] path/to/starter_program.py; then
+       echo "✅ Workflow completed successfully"
+       EXIT_CODE=0
+   else
+       EXIT_CODE=$?
+       if [ $EXIT_CODE -eq 124 ]; then
+           echo "⏱️  Workflow timed out after 60 seconds"
+           echo "Check: temporal workflow list --limit 5"
+       else
+           echo "❌ Workflow failed with exit code $EXIT_CODE"
+           echo "Check worker logs: tail worker.log"
+           echo "Check workflow status: temporal workflow show --workflow-id [id] --detailed"
+       fi
+   fi
    ```
 
 5. **Monitor execution and diagnose issues**:
@@ -153,10 +184,19 @@ Temporal workflows require manual integration testing with a running Temporal se
 8. **Clean shutdown and cleanup**:
    ```bash
    # Stop worker process (use PID from step 3)
-   kill [worker_pid]
+   kill $WORKER_PID 2>/dev/null || echo "Worker process not found"
+   
+   # Wait for graceful shutdown
+   sleep 2
+   
+   # Force kill if still running
+   kill -9 $WORKER_PID 2>/dev/null || true
    
    # Clean up log files
    rm -f worker.log
+   
+   # Optional: Terminate any remaining workflows from this test
+   # temporal workflow list --limit 10 | grep "test-" | awk '{print $2}' | xargs -r -I {} temporal workflow terminate --workflow-id {}
    ```
 
 #### Quick Test Script Pattern
@@ -168,14 +208,17 @@ For rapid testing across different repositories, use this template:
 # Quick Temporal workflow test - replace variables as needed
 WORKER_CMD="[package_manager] path/to/worker.py"
 STARTER_CMD="[package_manager] path/to/starter.py"
-WORKFLOW_ID="test-workflow-$(date +%s)"
+TASK_QUEUE="your-task-queue-name"
+WORKER_PATTERN="worker_search_pattern"
+REQUIRED_ENV_VAR="$YOUR_API_KEY"  # Adjust as needed
 
 # Pre-flight checks  
 curl -s -o /dev/null -w "%{http_code}" http://localhost:8233 | grep -q 200 || { echo "Start Temporal server first"; exit 1; }
 [[ -n "$REQUIRED_ENV_VAR" ]] || { echo "Set required environment variables"; exit 1; }
 
-# Clean slate
-temporal workflow list --limit 5 | grep -q "$WORKFLOW_ID" && temporal workflow terminate --workflow-id "$WORKFLOW_ID"
+# Clean slate - terminate conflicting workflows
+temporal workflow list --limit 50 | grep "$TASK_QUEUE" | grep "Running" | awk '{print $2}' | xargs -r -I {} temporal workflow terminate --workflow-id {}
+pkill -f "$WORKER_PATTERN" 2>/dev/null || true
 
 # Start worker with logging
 echo "Starting worker..."
