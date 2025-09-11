@@ -140,23 +140,44 @@ Temporal workflows require manual integration testing with a running Temporal se
    # grep -q "registered.*workflows" worker.log || echo "⚠️  Worker registration unclear"
    ```
 
-4. **Run the starter program with timeout and error handling**:
+4. **Run the starter program with fast error monitoring**:
    ```bash
-   # Use timeout to prevent hanging workflows
-   if timeout 60s [package_manager] path/to/starter_program.py; then
-       echo "✅ Workflow completed successfully"
-       EXIT_CODE=0
-   else
-       EXIT_CODE=$?
-       if [ $EXIT_CODE -eq 124 ]; then
-           echo "⏱️  Workflow timed out after 60 seconds"
-           echo "Check: temporal workflow list --limit 5"
-       else
-           echo "❌ Workflow failed with exit code $EXIT_CODE"
-           echo "Check worker logs: tail worker.log"
-           echo "Check workflow status: temporal workflow show --workflow-id [id] --detailed"
+   # Start workflow in background for real-time monitoring
+   [package_manager] path/to/starter_program.py &
+   STARTER_PID=$!
+   START_TIME=$(date +%s)
+   
+   # Monitor both workflow status and worker logs every 5 seconds
+   while kill -0 $STARTER_PID 2>/dev/null; do
+       ELAPSED=$(($(date +%s) - START_TIME))
+       
+       # Check for errors in worker logs (immediate detection)
+       if grep -q "Failed activation\|TypeError\|Exception\|Error" worker.log 2>/dev/null; then
+           echo "❌ ERROR detected after ${ELAPSED}s!"
+           grep -A 3 "TypeError\|Exception\|Error" worker.log | head -4
+           kill $STARTER_PID 2>/dev/null
+           exit 1
        fi
-   fi
+       
+       # Check workflow status via Temporal server
+       STATUS=$(temporal workflow show --workflow-id "workflow-id" --query "ExecutionStatus" 2>/dev/null || echo "PENDING")
+       echo "[$(date '+%H:%M:%S')] ${ELAPSED}s - Status: $STATUS"
+       
+       if [[ "$STATUS" == "Failed" ]]; then
+           echo "❌ Workflow failed after ${ELAPSED}s"
+           temporal workflow show --workflow-id "workflow-id" --detailed | grep -A 3 "failure.message"
+           kill $STARTER_PID 2>/dev/null
+           exit 1
+       elif [[ "$STATUS" == "Completed" ]]; then
+           echo "✅ Workflow completed after ${ELAPSED}s"
+           break
+       fi
+       
+       sleep 5
+   done
+   
+   wait $STARTER_PID
+   EXIT_CODE=$?
    ```
 
 5. **Monitor execution and diagnose issues**:
@@ -232,18 +253,42 @@ if grep -i "error\|exception\|failed" worker.log; then
     exit 1
 fi
 
-# Run workflow
-echo "Running workflow..."
-if timeout 60s $STARTER_CMD; then
-    echo "✅ Workflow completed successfully"
-    EXIT_CODE=0
-else
-    echo "❌ Workflow failed or timed out"
-    echo "Check: temporal workflow show --workflow-id [id] --detailed"
-    echo "Worker logs:"
-    tail -20 worker.log
-    EXIT_CODE=1
-fi
+# Run workflow with fast monitoring
+echo "Running workflow with real-time monitoring..."
+$STARTER_CMD &
+STARTER_PID=$!
+START_TIME=$(date +%s)
+
+while kill -0 $STARTER_PID 2>/dev/null; do
+    ELAPSED=$(($(date +%s) - START_TIME))
+    
+    # Check for errors in worker logs (immediate detection)
+    if grep -q "Failed activation\|TypeError\|Exception\|Error" worker.log 2>/dev/null; then
+        echo "❌ ERROR detected after ${ELAPSED}s!"
+        grep -A 3 "TypeError\|Exception\|Error" worker.log | head -4
+        kill $STARTER_PID 2>/dev/null
+        EXIT_CODE=1
+        break
+    fi
+    
+    # Check workflow status
+    STATUS=$(temporal workflow show --workflow-id "workflow-id" --query "ExecutionStatus" 2>/dev/null || echo "PENDING")
+    echo "[$(date '+%H:%M:%S')] ${ELAPSED}s - Status: $STATUS"
+    
+    if [[ "$STATUS" == "Failed" ]]; then
+        echo "❌ Workflow failed after ${ELAPSED}s"
+        EXIT_CODE=1
+        break
+    elif [[ "$STATUS" == "Completed" ]]; then
+        echo "✅ Workflow completed after ${ELAPSED}s"
+        EXIT_CODE=0
+        break
+    fi
+    
+    sleep 5
+done
+
+wait $STARTER_PID 2>/dev/null || true
 
 # Cleanup
 kill $WORKER_PID 2>/dev/null
@@ -297,15 +342,15 @@ pkill -f "worker"
 - Use Temporal Web UI for detailed workflow history
 - Add logging to workflow and activity code
 - Use `temporal workflow show --workflow-id [id]` for detailed status
-- Consider using `timeout` command to prevent hanging tests
+- Use fast monitoring pattern to prevent hanging tests and get immediate feedback
 
-**Timeout handling**:
-- **Exit code 124**: Process was killed by timeout - test took too long
-- **Exit code 0**: Process completed successfully within timeout
-- **Exit code 1-123**: Process failed with an error
-- **For interactive workflows**: If timeout occurs quickly (30s), likely needs user input
-- **For long workflows**: If timeout at 60s, try extending to 120s or 300s
-- **Debugging timeouts**: Check Temporal Web UI to see if workflow is still running
+**Fast monitoring benefits**:
+- **Exit code 0**: Workflow completed successfully
+- **Exit code 1**: Workflow failed or encountered errors
+- **Real-time feedback**: See progress and errors immediately as they occur
+- **For interactive workflows**: Detect prompts quickly with shorter sleep intervals (2-3s)
+- **For long workflows**: Monitor continuously without missing failures
+- **Debugging**: Get detailed error context from both worker logs and Temporal server
 
 #### Advanced Testing Strategies
 
@@ -322,91 +367,261 @@ pkill -f "worker"
 - Export workflow history for analysis
 
 **Automated testing integration**:
-- Use `timeout` command to prevent hanging: `timeout 60s python starter.py`
-- Check exit codes: `python starter.py && echo "Success" || echo "Failed"`
-- Capture and validate output: `python starter.py > output.txt && grep "expected" output.txt`
+- Use fast monitoring pattern for automated testing
+- Check exit codes from the monitoring script: `./monitor_script.sh && echo "Success" || echo "Failed"`
+- Capture and validate output: `./monitor_script.sh > output.txt && grep "expected" output.txt`
 
-**Timeout handling**:
-- **Default timeout**: 60 seconds is reasonable for most examples
-- **Long-running workflows**: Use `timeout 300s` (5 minutes) for complex agent workflows
-- **Interactive workflows**: Use `timeout 30s` to quickly detect if input is required
-- **Handle timeout exit codes**: Exit code 124 indicates timeout, 0 indicates success
+**Monitoring intervals**:
+- **Standard monitoring**: 5 seconds for most workflows
+- **Interactive workflows**: 2-3 seconds to quickly detect prompts for user input
+- **Long-running workflows**: 5-10 seconds to reduce log noise while maintaining responsiveness
 
-### Repository-Specific Testing
+### Adapting Testing Patterns to Any Repository
 
-This repository uses `uv` as the package manager. The `openai_agents/` directory contains examples organized by category:
+The general testing patterns above can be adapted to any Temporal Python repository by following these steps:
 
-#### Directory Structure and Commands
+#### 1. Discover Repository Structure
 
-**Basic Examples** (`openai_agents/basic/`):
+**Find package manager and commands**:
 ```bash
-# Terminal 1: Start worker
-uv run openai_agents/basic/run_worker.py
+# Check for package manager indicators
+ls pyproject.toml package.json requirements.txt setup.py Pipfile uv.lock
 
-# Terminal 2: Run examples with timeout
-timeout 60s uv run openai_agents/basic/run_hello_world_workflow.py
-timeout 60s uv run openai_agents/basic/run_tools_workflow.py
-timeout 60s uv run openai_agents/basic/run_local_image_workflow.py
+# Look for task definitions (common locations)
+grep -r "scripts\|tasks\|commands" pyproject.toml package.json
+cat pyproject.toml | grep -A 10 "\[tool.poe.tasks\]"  # poethepoet tasks
 ```
 
-**Agent Patterns** (`openai_agents/agent_patterns/`):
+**Identify worker and starter files**:
 ```bash
-# Terminal 1: Start worker  
-uv run openai_agents/agent_patterns/run_worker.py
+# Find potential worker files
+find . -name "*worker*" -o -name "*run_worker*" | head -10
 
-# Terminal 2: Run pattern examples with timeout
-timeout 60s uv run openai_agents/agent_patterns/run_deterministic_workflow.py
-timeout 60s uv run openai_agents/agent_patterns/run_parallelization_workflow.py
-timeout 60s uv run openai_agents/agent_patterns/run_routing_workflow.py
+# Find potential starter/client files  
+find . -name "run_*" -o -name "*client*" -o -name "*start*" | head -10
+
+# Look for workflow examples
+find . -name "*workflow*" | head -10
 ```
 
-**Interactive Examples** (require user input):
-```bash
-# Customer Service - interactive chat (use short timeout to detect interactivity)
-uv run openai_agents/customer_service/run_worker.py  # Terminal 1
-timeout 30s uv run openai_agents/customer_service/run_customer_service_client.py --conversation-id test-conversation  # Terminal 2
+#### 2. Adapt the Fast Monitoring Pattern
 
-# Financial Research - prompts for input (use short timeout to detect prompt)
-uv run openai_agents/financial_research_agent/run_worker.py  # Terminal 1  
-timeout 30s uv run openai_agents/financial_research_agent/run_financial_research_workflow.py  # Terminal 2
+Replace placeholders in the general pattern with repository-specific values:
+
+- **`[package_manager]`** → `python`, `uv run`, `poetry run`, `pipenv run`, etc.
+- **`path/to/worker_program.py`** → actual worker file path from step 1
+- **`path/to/starter_program.py`** → actual starter file path from step 1
+- **`"workflow-id"`** → actual workflow ID from the starter code
+- **`"your-task-queue"`** → actual task queue name from worker/starter code
+
+**Find workflow ID and task queue**:
+```bash
+# Search for workflow ID patterns in starter files
+grep -r "workflow.*id\|id.*workflow" . --include="*.py" | head -5
+
+# Search for task queue names
+grep -r "task.queue\|task_queue" . --include="*.py" | head -5
 ```
 
-**Long-running Examples** (may need extended timeout):
-```bash
-# Research Bot - complex multi-agent workflow
-uv run openai_agents/research_bot/run_worker.py  # Terminal 1
-timeout 300s uv run openai_agents/research_bot/run_research_workflow.py  # Terminal 2
+#### 3. Environment-Specific Adaptations
 
-# Tools examples - may involve external API calls
-uv run openai_agents/tools/run_worker.py  # Terminal 1
-timeout 120s uv run openai_agents/tools/run_web_search_workflow.py  # Terminal 2
+**Dependencies and setup**:
+```bash
+# Install dependencies (adapt based on package manager found)
+uv sync              # for uv
+pip install -r requirements.txt   # for pip
+poetry install       # for poetry
+pipenv install       # for pipenv
 ```
 
-#### Repository-Specific Setup
-
-**Environment requirements**:
+**Required environment variables**:
 ```bash
-# Install dependencies
-uv sync
+# Search for environment variable usage
+grep -r "os.environ\|getenv\|API_KEY\|SECRET" . --include="*.py" | head -5
 
-# Set OpenAI API key
-export OPENAI_API_KEY="your-key-here"
-
-# Start Temporal server
-temporal server start-dev
+# Common variables to check/set
+echo "OpenAI API Key: $(echo ${OPENAI_API_KEY:+SET})"
+echo "AWS credentials: $(echo ${AWS_ACCESS_KEY_ID:+SET})"
 ```
 
-**Common task queues used**:
-- `openai-agents-basic-task-queue` - Basic examples
-- `openai-agents-patterns-task-queue` - Agent patterns  
-- `openai-agents-task-queue` - Customer service
-- `financial-research-task-queue` - Financial research
+#### 4. Workflow Type Identification
 
-**Process management**:
+**Interactive vs Non-interactive**:
 ```bash
-# Kill specific worker types
-pkill -f "openai_agents.*run_worker"
+# Look for input() calls or CLI argument parsing
+grep -r "input()\|argparse\|click\|typer" . --include="*.py"
 
-# Find workers by task queue
-ps aux | grep "basic.*run_worker"
+# Check for streaming or continuous operations
+grep -r "stream\|continuous\|loop\|async" . --include="*.py" | grep -i workflow
 ```
+
+**Monitoring interval recommendations**:
+- **Standard workflows**: 5 seconds
+- **Interactive workflows** (detected input prompts): 2-3 seconds  
+- **Long-running/batch workflows**: 10 seconds
+- **Real-time/streaming workflows**: 2 seconds
+
+#### 5. Process Management Adaptations
+
+**Worker process patterns**:
+```bash
+# Adapt kill patterns to repository-specific naming
+pkill -f "your_repository_name.*worker"
+pkill -f "specific_directory.*run_worker"
+
+# Find running processes
+ps aux | grep "your_worker_pattern"
+```
+
+#### 6. Testing Script Template
+
+Create a repository-specific testing script by filling in the template:
+
+```bash
+#!/bin/bash
+# Repository-specific Temporal workflow test
+WORKER_CMD="[package_manager] [worker_file_path]"
+STARTER_CMD="[package_manager] [starter_file_path]"
+WORKFLOW_ID="[actual_workflow_id]"
+TASK_QUEUE="[actual_task_queue]"
+
+# [Include the full fast monitoring pattern from above with these variables]
+```
+
+This approach ensures the testing patterns work with any repository structure while maintaining the fast feedback benefits.
+
+#### Real-time Workflow Monitoring with Temporal Server
+
+When testing workflows, especially those that may fail or hang, query the Temporal server directly to get immediate diagnostic information. This is often faster and more informative than relying solely on worker logs.
+
+**Key Commands for Workflow Monitoring**:
+
+```bash
+# Get detailed workflow event history and current status
+temporal workflow show --workflow-id "my-workflow-id" --detailed
+
+# List recent workflows (useful when workflow ID is unknown)
+temporal workflow list --limit 10
+
+# Monitor specific task queue activity
+temporal task-queue describe --task-queue "openai-agents-basic-task-queue"
+
+# Check for failed workflows in the last hour
+temporal workflow list --query "ExecutionStatus='Failed'" --limit 20
+```
+
+**Continuous Monitoring Pattern**:
+
+During testing, poll the Temporal server every 5 seconds to catch issues quickly:
+
+```bash
+#!/bin/bash
+# Monitor workflow during testing - run this in a separate terminal
+WORKFLOW_ID="my-workflow-id"  # Replace with actual workflow ID
+TASK_QUEUE="openai-agents-basic-task-queue"  # Replace with actual task queue
+
+echo "Monitoring workflow: $WORKFLOW_ID"
+echo "Task queue: $TASK_QUEUE"
+echo "Press Ctrl+C to stop monitoring"
+echo "================================"
+
+while true; do
+    echo "[$(date '+%H:%M:%S')] Checking workflow status..."
+    
+    # Check workflow status
+    STATUS=$(temporal workflow show --workflow-id "$WORKFLOW_ID" --query "ExecutionStatus" 2>/dev/null || echo "NOT_FOUND")
+    echo "Status: $STATUS"
+    
+    # If workflow failed, get detailed error
+    if [[ "$STATUS" == "Failed" ]]; then
+        echo "❌ WORKFLOW FAILED - Getting details..."
+        temporal workflow show --workflow-id "$WORKFLOW_ID" --detailed | grep -A 20 "WorkflowTaskFailed\|ActivityTaskFailed"
+        break
+    elif [[ "$STATUS" == "Completed" ]]; then
+        echo "✅ WORKFLOW COMPLETED"
+        break
+    elif [[ "$STATUS" == "NOT_FOUND" ]]; then
+        echo "⚠️  Workflow not found - may not have started yet"
+    fi
+    
+    # Check task queue backlog
+    BACKLOG=$(temporal task-queue describe --task-queue "$TASK_QUEUE" --query "pollers" 2>/dev/null || echo "N/A")
+    echo "Task queue status: $BACKLOG"
+    
+    echo "---"
+    sleep 5
+done
+```
+
+**Common Diagnostic Queries**:
+
+```bash
+# Find workflows by type (useful when many are running)
+temporal workflow list --query "WorkflowType='HelloWorldAgent'" --limit 10
+
+# Get the last 5 events for a workflow (quick status check)
+temporal workflow show --workflow-id "my-workflow-id" --query "Events[-5:]"
+
+# Check if worker is connected to task queue
+temporal task-queue describe --task-queue "openai-agents-basic-task-queue"
+
+# Monitor all running workflows
+temporal workflow list --query "ExecutionStatus='Running'" --limit 50
+
+# Get stack trace for stuck workflows
+temporal workflow query --workflow-id "my-workflow-id" --query-type "__stack_trace"
+```
+
+**Error Pattern Recognition**:
+
+Common error patterns in workflow event history:
+
+- **`WorkflowTaskFailed`**: Error in workflow code (Python exceptions, import errors)
+- **`ActivityTaskFailed`**: Error in activity execution (API failures, timeouts)
+- **`WorkflowTaskTimedOut`**: Workflow took too long to process (possible infinite loop)
+- **`ActivityTaskTimedOut`**: Activity exceeded timeout (slow external service)
+
+**Integration with Testing Scripts**:
+
+Add these checks to your testing workflow:
+
+```bash
+# Enhanced testing pattern with real-time monitoring
+WORKFLOW_ID="my-workflow-id"
+STARTER_CMD="uv run openai_agents/basic/run_hello_world_workflow.py"
+
+# Start workflow
+echo "Starting workflow..."
+$STARTER_CMD &
+STARTER_PID=$!
+
+# Monitor workflow status every 5 seconds
+echo "Monitoring workflow progress..."
+while kill -0 $STARTER_PID 2>/dev/null; do
+    STATUS=$(temporal workflow show --workflow-id "$WORKFLOW_ID" --query "ExecutionStatus" 2>/dev/null || echo "PENDING")
+    echo "[$(date '+%H:%M:%S')] Status: $STATUS"
+    
+    if [[ "$STATUS" == "Failed" ]]; then
+        echo "❌ Workflow failed - getting error details..."
+        temporal workflow show --workflow-id "$WORKFLOW_ID" --detailed | grep -A 10 "failure.message"
+        kill $STARTER_PID 2>/dev/null
+        exit 1
+    fi
+    
+    sleep 5
+done
+
+# Final status check
+wait $STARTER_PID
+EXIT_CODE=$?
+FINAL_STATUS=$(temporal workflow show --workflow-id "$WORKFLOW_ID" --query "ExecutionStatus" 2>/dev/null)
+echo "Final status: $FINAL_STATUS (exit code: $EXIT_CODE)"
+```
+
+**Benefits of Server Queries**:
+- **Faster error detection**: Get errors immediately when they occur
+- **Detailed stack traces**: See exact failure location and parameters
+- **Progress tracking**: Monitor long-running workflows without waiting for completion
+- **Worker health**: Verify workers are connected and processing tasks
+- **Historical analysis**: Review past executions and patterns
+
