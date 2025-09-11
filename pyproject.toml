@@ -55,7 +55,7 @@ open-telemetry = [
     "opentelemetry-exporter-otlp-proto-grpc",
 ]
 openai-agents = [
-    "openai-agents[litellm] >= 0.2.3",
+    "openai-agents[litellm] == 0.2.9",
     "temporalio[openai-agents] >= 1.15.0",
 ]
 pydantic-converter = ["pydantic>=2.10.6,<3"]

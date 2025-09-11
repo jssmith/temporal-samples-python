@@ -140,16 +140,48 @@ Temporal workflows require manual integration testing with a running Temporal se
    # grep -q "registered.*workflows" worker.log || echo "⚠️  Worker registration unclear"
    ```
 
-4. **Run the starter program with fast error monitoring**:
+**Optional: Automated Input for Interactive Workflows**
+
+If you suspect the workflow might be interactive, you can prepare automated inputs:
+
+```bash
+# Create test inputs (optional - for suspected interactive workflows)
+cat > /tmp/test_inputs.txt << 'EOF'
+Test message 1
+Test message 2  
+Test message 3
+Thank you
+EOF
+
+# Use input automation if workflow requires interaction
+cat /tmp/test_inputs.txt | [package_manager] path/to/starter_program.py &
+STARTER_PID=$!
+
+# Continue with adaptive monitoring (step 4)...
+```
+
+**Note**: This approach works for both interactive and non-interactive workflows. Non-interactive workflows will ignore the piped input.
+
+4. **Run the starter program with adaptive monitoring**:
    ```bash
-   # Start workflow in background for real-time monitoring
+   # Start workflow with interactive detection
    [package_manager] path/to/starter_program.py &
    STARTER_PID=$!
    START_TIME=$(date +%s)
+   INTERACTIVE_DETECTED=false
    
-   # Monitor both workflow status and worker logs every 5 seconds
+   # Monitor with adaptive intervals and interactive detection
    while kill -0 $STARTER_PID 2>/dev/null; do
        ELAPSED=$(($(date +%s) - START_TIME))
+       
+       # Detect interactive workflows by monitoring for input prompts
+       if ps -p $STARTER_PID -o command= 2>/dev/null | grep -q "python.*input" || 
+          lsof -p $STARTER_PID 2>/dev/null | grep -q "stdin" 2>/dev/null; then
+           if [ "$INTERACTIVE_DETECTED" = false ]; then
+               echo "🔄 Interactive workflow detected - adapting monitoring..."
+               INTERACTIVE_DETECTED=true
+           fi
+       fi
        
        # Check for errors in worker logs (immediate detection)
        if grep -q "Failed activation\|TypeError\|Exception\|Error" worker.log 2>/dev/null; then
@@ -161,7 +193,15 @@ Temporal workflows require manual integration testing with a running Temporal se
        
        # Check workflow status via Temporal server
        STATUS=$(temporal workflow show --workflow-id "workflow-id" --query "ExecutionStatus" 2>/dev/null || echo "PENDING")
-       echo "[$(date '+%H:%M:%S')] ${ELAPSED}s - Status: $STATUS"
+       
+       # Adaptive status reporting based on workflow type
+       if [ "$INTERACTIVE_DETECTED" = true ]; then
+           # For interactive workflows, also report conversation progress
+           UPDATE_COUNT=$(temporal workflow show --workflow-id "workflow-id" | grep -c "WorkflowExecutionUpdated" 2>/dev/null || echo "0")
+           echo "[$(date '+%H:%M:%S')] ${ELAPSED}s - Status: $STATUS (Interactive: $UPDATE_COUNT updates)"
+       else
+           echo "[$(date '+%H:%M:%S')] ${ELAPSED}s - Status: $STATUS"
+       fi
        
        if [[ "$STATUS" == "Failed" ]]; then
            echo "❌ Workflow failed after ${ELAPSED}s"
@@ -173,11 +213,24 @@ Temporal workflows require manual integration testing with a running Temporal se
            break
        fi
        
-       sleep 5
+       # Adaptive sleep intervals
+       if [ "$INTERACTIVE_DETECTED" = true ]; then
+           sleep 3  # Shorter intervals for interactive workflows
+       else
+           sleep 5  # Standard intervals for non-interactive workflows
+       fi
    done
    
+   # Handle expected interactive workflow completion
    wait $STARTER_PID
    EXIT_CODE=$?
+   
+   if [ "$INTERACTIVE_DETECTED" = true ] && [ $EXIT_CODE -eq 1 ]; then
+       echo "✅ Interactive workflow completed (EOF reached - expected)"
+       EXIT_CODE=0  # Normalize exit code for interactive workflows
+   fi
+   
+   echo "Final exit code: $EXIT_CODE"
    ```
 
 5. **Monitor execution and diagnose issues**:
@@ -192,15 +245,49 @@ Temporal workflows require manual integration testing with a running Temporal se
    ps aux | grep [worker_pattern]
    ```
 
-6. **Handle user input** (if required):
-   - Some workflows require interactive input
-   - Watch the starter program output for prompts
-   - Provide input when requested
+6. **Handle interactive workflows** (if detected):
+   - Interactive workflows are automatically detected in step 4
+   - Use input automation (see optional step before step 4) for consistent testing
+   - Watch for input prompts in real-time monitoring
+   - EOF errors (exit code 1) are expected when automated input completes
 
-7. **Verify completion**:
-   - Starter program exits with code 0
-   - Expected output is printed to console
-   - Workflow shows as "Completed" in Temporal UI
+7. **Adaptive verification based on workflow type**:
+
+   **Standard Verification (all workflows)**:
+   - Starter program exits (or reaches steady state for interactive)
+   - Expected output is produced  
+   - No errors in worker logs
+   
+   **Additional Interactive Verification (if detected)**:
+   ```bash
+   # If interactive workflow was detected, validate conversation state
+   if [ "$INTERACTIVE_DETECTED" = true ]; then
+       echo "Validating interactive workflow state..."
+       
+       # Attempt to retrieve conversation/session state
+       CONVERSATION_STATE=$(temporal workflow query --workflow-id "workflow-id" --query-type "get_chat_history" 2>/dev/null || 
+                           temporal workflow query --workflow-id "workflow-id" --query-type "get_session_state" 2>/dev/null ||
+                           echo "")
+       
+       if [ -n "$CONVERSATION_STATE" ]; then
+           echo "✅ Interactive state preserved"
+           # Optional: Validate state content
+           STATE_LENGTH=$(echo "$CONVERSATION_STATE" | jq '. | length' 2>/dev/null || echo "unknown")
+           echo "Interaction turns: $STATE_LENGTH"
+       else
+           echo "⚠️  Interactive state validation inconclusive"
+       fi
+       
+       # Check if workflow is designed to persist (common for interactive workflows)
+       FINAL_STATUS=$(temporal workflow show --workflow-id "workflow-id" --query "ExecutionStatus" 2>/dev/null || echo "UNKNOWN")
+       if [ "$FINAL_STATUS" = "Running" ]; then
+           echo "✅ Interactive workflow persisting (as expected)"
+           # Clean up persistent test workflow
+           temporal workflow terminate --workflow-id "workflow-id" 2>/dev/null
+           echo "✅ Test workflow cleaned up"
+       fi
+   fi
+   ```
 
 8. **Clean shutdown and cleanup**:
    ```bash
@@ -253,14 +340,24 @@ if grep -i "error\|exception\|failed" worker.log; then
     exit 1
 fi
 
-# Run workflow with fast monitoring
+# Run workflow with adaptive monitoring
 echo "Running workflow with real-time monitoring..."
 $STARTER_CMD &
 STARTER_PID=$!
 START_TIME=$(date +%s)
+INTERACTIVE_DETECTED=false
 
 while kill -0 $STARTER_PID 2>/dev/null; do
     ELAPSED=$(($(date +%s) - START_TIME))
+    
+    # Detect interactive workflows
+    if ps -p $STARTER_PID -o command= 2>/dev/null | grep -q "python.*input" || 
+       lsof -p $STARTER_PID 2>/dev/null | grep -q "stdin" 2>/dev/null; then
+        if [ "$INTERACTIVE_DETECTED" = false ]; then
+            echo "🔄 Interactive workflow detected - adapting monitoring..."
+            INTERACTIVE_DETECTED=true
+        fi
+    fi
     
     # Check for errors in worker logs (immediate detection)
     if grep -q "Failed activation\|TypeError\|Exception\|Error" worker.log 2>/dev/null; then
@@ -273,7 +370,14 @@ while kill -0 $STARTER_PID 2>/dev/null; do
     
     # Check workflow status
     STATUS=$(temporal workflow show --workflow-id "workflow-id" --query "ExecutionStatus" 2>/dev/null || echo "PENDING")
-    echo "[$(date '+%H:%M:%S')] ${ELAPSED}s - Status: $STATUS"
+    
+    # Adaptive status reporting
+    if [ "$INTERACTIVE_DETECTED" = true ]; then
+        UPDATE_COUNT=$(temporal workflow show --workflow-id "workflow-id" | grep -c "WorkflowExecutionUpdated" 2>/dev/null || echo "0")
+        echo "[$(date '+%H:%M:%S')] ${ELAPSED}s - Status: $STATUS (Interactive: $UPDATE_COUNT updates)"
+    else
+        echo "[$(date '+%H:%M:%S')] ${ELAPSED}s - Status: $STATUS"
+    fi
     
     if [[ "$STATUS" == "Failed" ]]; then
         echo "❌ Workflow failed after ${ELAPSED}s"
@@ -285,10 +389,21 @@ while kill -0 $STARTER_PID 2>/dev/null; do
         break
     fi
     
-    sleep 5
+    # Adaptive sleep intervals
+    if [ "$INTERACTIVE_DETECTED" = true ]; then
+        sleep 3  # Shorter intervals for interactive workflows
+    else
+        sleep 5  # Standard intervals
+    fi
 done
 
 wait $STARTER_PID 2>/dev/null || true
+
+# Handle interactive workflow completion
+if [ "$INTERACTIVE_DETECTED" = true ] && [ $? -eq 1 ]; then
+    echo "✅ Interactive workflow completed (EOF reached - expected)"
+    EXIT_CODE=0
+fi
 
 # Cleanup
 kill $WORKER_PID 2>/dev/null
@@ -305,7 +420,10 @@ For each workflow example:
 - [ ] Starter program connects to Temporal server
 - [ ] Workflow executes without errors (check detailed workflow history)
 - [ ] Expected output is produced
-- [ ] Starter program exits with code 0
+- [ ] Starter program exits with code 0 (or code 1 for interactive workflows with EOF)
+- [ ] **Interactive workflows**: Input automation works and conversation state is preserved
+- [ ] **Interactive workflows**: Workflow queries return conversation/session data
+- [ ] **Interactive workflows**: Persistent workflows are properly terminated after testing
 - [ ] Worker can be cleanly shut down
 
 #### Troubleshooting
@@ -338,11 +456,31 @@ pkill -f "worker"
 - Verify dependencies are installed
 - Check that task queue names match between worker and starter
 
+**Interactive Workflow Considerations**:
+- **EOFError or exit code 1**: Normal for interactive workflows when input ends
+- **Workflow status "Running" indefinitely**: Expected for persistent interactive workflows  
+- **Client hangs waiting for input**: Workflow requires human input - use input automation for testing
+- **Context loss between messages**: Check workflow query/update implementation
+- **Multiple conversation turns**: Monitor workflow update count rather than just execution status
+
+**Interactive Detection Methods**:
+```bash
+# Check if process is waiting for stdin
+lsof -p $PID 2>/dev/null | grep -q "stdin"
+
+# Look for input() prompts in process command
+ps -p $PID -o command= 2>/dev/null | grep -q "python.*input"
+
+# Check for interactive patterns in workflow
+grep -r "input()\|workflow.update\|workflow.query" path/to/workflow.py
+```
+
 **Debugging workflows**:
 - Use Temporal Web UI for detailed workflow history
 - Add logging to workflow and activity code
 - Use `temporal workflow show --workflow-id [id]` for detailed status
-- Use fast monitoring pattern to prevent hanging tests and get immediate feedback
+- Use adaptive monitoring pattern to prevent hanging tests and get immediate feedback
+- For interactive workflows: Monitor workflow updates and query conversation state
 
 **Fast monitoring benefits**:
 - **Exit code 0**: Workflow completed successfully

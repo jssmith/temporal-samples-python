@@ -20,7 +20,7 @@ async def main():
         FileSearchWorkflow.run,
         args=[
             "Be concise, and tell me 1 sentence about Arrakis I might not know.",
-            "vs_68855c27140c8191849b5f1887d8d335",  # Vector store with Arrakis knowledge
+            "vs_68c334cee3688191a8d72d487c9f055e",  # Vector store with Arrakis knowledge
         ],
         id="file-search-workflow",
         task_queue="openai-agents-tools-task-queue",
