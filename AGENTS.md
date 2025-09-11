@@ -352,6 +352,15 @@ pkill -f "worker"
 - **For long workflows**: Monitor continuously without missing failures
 - **Debugging**: Get detailed error context from both worker logs and Temporal server
 
+#### Error Analysis: Transient vs Persistent
+
+Before retrying failed workflows, determine if the issue is transient or persistent:
+
+**Retry once if**: Connection errors, server unavailability, resource constraints
+**Don't retry if**: `TypeError`, `ImportError`, `AttributeError`, API signature mismatches
+
+Key question: *Does this error indicate a systemic problem (code/config/compatibility) or a temporary condition?*
+
 #### Advanced Testing Strategies
 
 **Development workflow**:
