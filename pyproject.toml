@@ -55,8 +55,8 @@ open-telemetry = [
     "opentelemetry-exporter-otlp-proto-grpc",
 ]
 openai-agents = [
-    "openai-agents[litellm] >= 0.2.3",
-    "temporalio[openai-agents] >= 1.15.0",
+    "openai-agents[litellm] >= 0.3.0",
+    "temporalio[openai-agents] @ /Users/jssmith/b/sdk-python/dist/temporalio-1.17.0-cp39-abi3-macosx_11_0_arm64.whl",
 ]
 pydantic-converter = ["pydantic>=2.10.6,<3"]
 sentry = ["sentry-sdk>=2.13.0"]
