@@ -107,6 +107,15 @@ export OPENAI_API_KEY="your-key"
 pkill -f "uv run.*worker.py"
 ```
 
+### Clean up lingering workflows
+```bash
+# Check what test workflows are still running
+uv run python cleanup_workflows.py --dry-run
+
+# Terminate any lingering test workflows
+uv run python cleanup_workflows.py
+```
+
 ## Advanced Usage
 
 ### Run with pytest directly

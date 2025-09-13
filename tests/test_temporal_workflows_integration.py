@@ -278,18 +278,30 @@ class TemporalWorkflowTestRunner:
             
         try:
             client = await Client.connect("localhost:7233")
+            terminated_count = 0
             
             # List workflows and terminate matching ones
             async for workflow in client.list_workflows():
                 workflow_id = workflow.id
+                
+                # Skip already completed/failed workflows
+                if workflow.status.name not in ["RUNNING", "CONTINUED_AS_NEW"]:
+                    continue
+                    
                 if any(pattern in workflow_id for pattern in workflow_id_patterns):
                     try:
                         handle = client.get_workflow_handle(workflow_id)
                         await handle.terminate()
-                    except Exception:
-                        pass  # Workflow might already be terminated
+                        terminated_count += 1
+                        print(f"Terminated workflow: {workflow_id}")
+                    except Exception as e:
+                        print(f"Failed to terminate {workflow_id}: {e}")
                         
-        except Exception:
+            if terminated_count > 0:
+                print(f"Cleaned up {terminated_count} running workflows")
+                        
+        except Exception as e:
+            print(f"Workflow cleanup failed: {e}")
             pass  # Temporal server might not be available
 
     def cleanup_temporal_workflows_sync(self, workflow_id_patterns: List[str]):
@@ -434,6 +446,30 @@ class TestTemporalWorkflowsIntegration:
                 # Configure workflow ID patterns for cleanup
                 directory_name = config.directory.name.replace("_", "-")
                 config.workflow_id_patterns = [directory_name, config.directory.name]
+                
+                # Add specific workflow ID patterns for better cleanup
+                if "customer_service" in name:
+                    config.workflow_id_patterns.extend(["test-conversation-", "customer-service"])
+                if "research_bot" in name:
+                    config.workflow_id_patterns.extend(["research-workflow"])
+                if "reasoning_content" in name:
+                    config.workflow_id_patterns.extend(["reasoning-content"])
+                if "model_providers" in name:
+                    config.workflow_id_patterns.extend(["litellm-", "gpt-oss-"])
+                if "financial_research" in name:
+                    config.workflow_id_patterns.extend(["financial-research-"])
+                if "memory" in name:
+                    config.workflow_id_patterns.extend(["openai-session"])
+                if "handoffs" in name:
+                    config.workflow_id_patterns.extend(["message-filter"])
+                if "hosted_mcp" in name:
+                    config.workflow_id_patterns.extend(["simple-mcp", "approval-mcp"])
+                if "tools" in name:
+                    config.workflow_id_patterns.extend(["code-interpreter", "web-search", "file-search", "image-generator"])
+                if "basic" in name:
+                    config.workflow_id_patterns.extend(["hello-world", "lifecycle", "tools-", "image-", "previous-response", "dynamic-"])
+                if "agent_patterns" in name:
+                    config.workflow_id_patterns.extend(["deterministic", "forcing-tool", "guardrails", "llm-as-a-judge", "parallelization", "routing", "agents-as-tools"])
 
     async def test_discovered_workflow_examples(self):
         """Test all discovered workflow examples."""
@@ -505,6 +541,9 @@ class TestTemporalWorkflowsIntegration:
         print(f"Successful workflows: {successful_workflows}")
         print(f"Success rate: {successful_workflows/total_workflows*100:.1f}%" if total_workflows > 0 else "0%")
         
+        # Final cleanup - terminate any workflows that might still be running
+        await self._final_workflow_cleanup()
+        
         # We expect some failures due to missing dependencies, so don't fail the test
         # if at least 70% pass
         if total_workflows > 0:
@@ -513,6 +552,42 @@ class TestTemporalWorkflowsIntegration:
                 pytest.fail(f"Too many workflow failures: {success_rate*100:.1f}% success rate")
         else:
             pytest.fail("No workflows were tested")
+
+    async def _final_workflow_cleanup(self):
+        """Final cleanup to terminate any lingering test workflows."""
+        print("\n🧹 Final cleanup - checking for lingering workflows...")
+        
+        # Common workflow ID patterns that should be cleaned up
+        cleanup_patterns = [
+            "test-conversation-",
+            "research-workflow", 
+            "reasoning-content",
+            "litellm-",
+            "gpt-oss-",
+            "financial-research-",
+            "openai-session",
+            "message-filter",
+            "simple-mcp",
+            "approval-mcp",
+            "code-interpreter",
+            "web-search", 
+            "file-search",
+            "image-generator",
+            "hello-world",
+            "lifecycle",
+            "tools-",
+            "dynamic-",
+            "previous-response",
+            "deterministic",
+            "forcing-tool",
+            "guardrails",
+            "llm-as-a-judge", 
+            "parallelization",
+            "routing",
+            "agents-as-tools"
+        ]
+        
+        await self.cleanup_temporal_workflows(cleanup_patterns)
 
 
 # Allow running with pytest

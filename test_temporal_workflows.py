@@ -160,8 +160,22 @@ class GenericTestRunner:
             print("\n🎉 All tests completed successfully!")
             return True
             
+        except KeyboardInterrupt:
+            print("\n\n⏹️  Tests interrupted - cleaning up workflows...")
+            if self.test_instance:
+                try:
+                    await self.test_instance._final_workflow_cleanup()
+                except Exception:
+                    pass
+            raise
         except Exception as e:
             print(f"\n❌ Tests failed: {str(e)}")
+            # Ensure cleanup happens even on failure
+            if self.test_instance:
+                try:
+                    await self.test_instance._final_workflow_cleanup()
+                except Exception:
+                    pass  # Don't let cleanup failure mask the original error
             return False
         finally:
             if self.test_instance:
