@@ -16,7 +16,6 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.openai import OpenAIInstrumentor
 
 # Set up tracer provider at module load time
 _resource = Resource.create(
@@ -31,16 +30,17 @@ _otlp_exporter = OTLPSpanExporter(endpoint="http://localhost:4317", insecure=Tru
 _provider.add_span_processor(BatchSpanProcessor(_otlp_exporter))
 trace.set_tracer_provider(_provider)
 
-# Instrument OpenAI BEFORE importing any code that uses it
+# Instrument OpenAI IMMEDIATELY after setting tracer provider, BEFORE importing agents SDK
+from opentelemetry.instrumentation.openai import OpenAIInstrumentor
 OpenAIInstrumentor(
     enrich_assistant=True,
     enable_trace_context_propagation=True,
 ).instrument()
 
-print("OpenTelemetry tracer provider and OpenAI instrumentation configured")
+print("OpenTelemetry tracer provider configured and OpenAI instrumented")
 
 # =============================================================================
-# Now safe to import application code
+# Now safe to import application code (which imports agents SDK)
 # =============================================================================
 import asyncio
 
