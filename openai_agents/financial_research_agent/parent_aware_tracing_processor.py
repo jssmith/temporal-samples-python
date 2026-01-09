@@ -1,41 +1,28 @@
-"""Custom TracingProcessor that respects existing OTEL parent context.
+"""Custom TracingProcessor for Temporal workflows with OTEL trace continuity.
 
-This module provides a fix for OpenInferenceTracingProcessor.on_trace_start()
-which creates new OTEL trace IDs instead of continuing existing parent context.
-This breaks trace continuity when propagating traces across service boundaries
-(e.g., from client to Temporal worker).
+This module provides a Temporal-aware processor that extends the upstream
+OpenInferenceTracingProcessor with support for the Temporal workflow sandbox.
 
-The fix: Pass the current OTEL context to start_span() so that new traces
-continue the existing OTEL trace ID instead of creating a new one.
-
-For Temporal workflows, the OTEL context is stored on the workflow instance
-since the workflow sandbox isolates Python state and contextvars don't propagate.
-
-Additional fix: Enter the OTEL span as the current span so that context
-propagation can find it when creating headers.
+The Temporal sandbox isolates contextvars, so standard OTEL context propagation
+via get_current_span() doesn't work inside workflows. This processor overrides
+_get_parent_context() to also check for parent context stored on the workflow
+instance by the interceptor.
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from agents.tracing import Trace
 from opentelemetry import trace as otel_trace
-from opentelemetry.context import attach, detach
-from opentelemetry.trace import set_span_in_context, Tracer, SpanContext, TraceFlags, NonRecordingSpan
+from opentelemetry.context import Context
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, Tracer, set_span_in_context
 
 from openinference.instrumentation.openai_agents._processor import (
     OpenInferenceTracingProcessor,
-)
-from openinference.semconv.trace import (
-    OpenInferenceSpanKindValues,
-    SpanAttributes,
 )
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import TracerProvider
 
-
-OPENINFERENCE_SPAN_KIND = SpanAttributes.OPENINFERENCE_SPAN_KIND
 
 # Attribute name for stored OTEL parent context (must match interceptor)
 OTEL_PARENT_CONTEXT_ATTR = "__otel_parent_context"
@@ -44,15 +31,16 @@ OTEL_PARENT_CONTEXT_ATTR = "__otel_parent_context"
 def _get_workflow_otel_parent_context() -> Context | None:
     """Try to get OTEL parent context from workflow instance.
 
-    Inside a Temporal workflow sandbox, OTEL's attach() doesn't work because
-    contextvars are isolated. The interceptor stores the parent OTEL context
-    on the workflow instance, which IS accessible from within the sandbox.
+    Inside a Temporal workflow sandbox, OTEL's get_current_span() doesn't work
+    because contextvars are isolated. The interceptor stores the parent OTEL
+    context on the workflow instance, which IS accessible from within the sandbox.
 
     Returns:
         OTEL Context with parent span if found, None otherwise.
     """
     try:
         from temporalio import workflow
+
         instance = workflow.instance()
         parent_info = getattr(instance, OTEL_PARENT_CONTEXT_ATTR, None)
         if parent_info:
@@ -70,80 +58,39 @@ def _get_workflow_otel_parent_context() -> Context | None:
 
 
 class ParentAwareTracingProcessor(OpenInferenceTracingProcessor):
-    """TracingProcessor that respects existing OTEL parent context.
+    """Temporal-aware TracingProcessor that handles sandbox context isolation.
 
-    Fixes the issue where OpenInferenceTracingProcessor.on_trace_start()
-    creates new OTEL trace IDs instead of continuing parent context.
+    Extends OpenInferenceTracingProcessor by overriding _get_parent_context()
+    to also check for parent context stored on the workflow instance.
 
-    When an OTEL parent span exists (e.g., from propagated context), this
-    processor will create the new trace span as a child of that parent,
-    preserving the OTEL trace ID across service boundaries.
+    This is necessary because the Temporal sandbox isolates contextvars,
+    making standard OTEL context propagation via get_current_span() fail
+    inside workflows.
     """
 
-    def on_trace_start(self, trace: Trace) -> None:
-        """Called when a trace is started.
-
-        Unlike the base implementation, this checks for existing OTEL parent
-        context and passes it to start_span() to maintain trace continuity.
+    def _get_parent_context(self) -> Context | None:
+        """Get parent OTEL context, with Temporal workflow support.
 
         Checks two sources for parent context:
-        1. Current OTEL span (works outside sandbox, e.g., activities)
+        1. Standard OTEL context via get_current_span() (works outside sandbox)
         2. Workflow instance attribute (works inside sandbox)
 
-        Args:
-            trace: The trace that started.
+        Returns:
+            OTEL Context with parent span if found, None otherwise.
         """
-        context = None
+        # First try standard OTEL context (works outside sandbox, e.g., activities)
+        if context := super()._get_parent_context():
+            return context
 
-        # First, check for current OTEL span context (works outside sandbox)
-        current_span = otel_trace.get_current_span()
-        parent_ctx = current_span.get_span_context() if current_span else None
-        if parent_ctx and parent_ctx.is_valid:
-            context = set_span_in_context(current_span)
-
-        # If no OTEL context, try workflow instance (works inside sandbox)
-        if context is None:
-            context = _get_workflow_otel_parent_context()
-
-        otel_span = self._tracer.start_span(
-            name=trace.name,
-            context=context,  # Pass parent context to continue trace ID
-            attributes={
-                OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.AGENT.value,
-            },
-        )
-        self._root_spans[trace.trace_id] = otel_span
-
-        # Enter the span as current so context propagation can find it
-        # Store the token so we can detach in on_trace_end
-        span_context = set_span_in_context(otel_span)
-        token = attach(span_context)
-        if not hasattr(self, "_context_tokens"):
-            self._context_tokens = {}
-        self._context_tokens[trace.trace_id] = token
-
-    def on_trace_end(self, trace: Trace) -> None:
-        """Called when a trace is ended.
-
-        Detaches the OTEL context we attached in on_trace_start.
-        """
-        # Detach the context token we stored
-        if hasattr(self, "_context_tokens") and trace.trace_id in self._context_tokens:
-            token = self._context_tokens.pop(trace.trace_id)
-            try:
-                detach(token)
-            except ValueError:
-                pass  # Context was created in different context - expected in some cases
-
-        # Call parent implementation to end the span
-        super().on_trace_end(trace)
+        # Fall back to workflow instance for sandbox context
+        return _get_workflow_otel_parent_context()
 
 
 def setup_tracing(tracer_provider: TracerProvider) -> None:
-    """Setup tracing with our custom parent-aware processor.
+    """Setup tracing with our Temporal-aware processor.
 
     This replaces OpenAIAgentsInstrumentor().instrument() with our custom
-    processor that respects parent OTEL context.
+    processor that handles Temporal sandbox context isolation.
 
     Args:
         tracer_provider: The OTEL TracerProvider to use for creating spans.

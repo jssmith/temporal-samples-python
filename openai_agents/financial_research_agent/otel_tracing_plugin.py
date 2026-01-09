@@ -21,18 +21,35 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from opentelemetry import trace as otel_trace
 from temporalio.plugin import SimplePlugin
 import temporalio.worker
 
 from openai_agents.financial_research_agent.openai_agents_context_interceptor import (
     OpenAIAgentsContextInterceptor,
 )
-from openai_agents.financial_research_agent.parent_aware_tracing_processor import (
-    setup_tracing,
-)
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import TracerProvider
+
+
+def setup_tracing(tracer_provider: TracerProvider) -> None:
+    """Set up OpenAI Agents OTEL tracing with Temporal sandbox support.
+
+    Uses ParentAwareTracingProcessor which extends the upstream
+    OpenInferenceTracingProcessor with support for retrieving parent
+    context from the workflow instance (needed because the Temporal
+    sandbox isolates contextvars).
+    """
+    from openai_agents.financial_research_agent.parent_aware_tracing_processor import (
+        setup_tracing as setup_parent_aware_tracing,
+    )
+
+    # Set as global tracer provider
+    otel_trace.set_tracer_provider(tracer_provider)
+
+    # Use our Temporal-aware processor
+    setup_parent_aware_tracing(tracer_provider)
 
 
 class OtelTracingPlugin(SimplePlugin):
@@ -40,7 +57,7 @@ class OtelTracingPlugin(SimplePlugin):
 
     This plugin:
     1. REPLACES any existing worker interceptors with OpenAIAgentsContextInterceptor
-    2. Sets up ParentAwareTracingProcessor for proper OTEL span creation
+    2. Sets up OpenInferenceTracingProcessor for OTEL span creation
 
     The replacement behavior ensures clean traces without temporal:* spans
     while maintaining proper OTEL trace ID continuity across service boundaries.
@@ -51,7 +68,7 @@ class OtelTracingPlugin(SimplePlugin):
     """
 
     def __init__(self, tracer_provider: TracerProvider | None = None) -> None:
-        # Set up parent-aware tracing if provider given
+        # Set up tracing if provider given
         if tracer_provider is not None:
             setup_tracing(tracer_provider)
 
