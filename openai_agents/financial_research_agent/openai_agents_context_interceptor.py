@@ -135,14 +135,6 @@ class CarrierSpan:
         return None
 
 
-# Debug flag - set to True to enable debug output
-_DEBUG = False
-def _debug(msg: str) -> None:
-    if _DEBUG:
-        import sys
-        print(f"[INTERCEPTOR] {msg}", file=sys.stderr, flush=True)
-
-
 def _set_header_from_context(
     input: Any, payload_converter: temporalio.converter.PayloadConverter
 ) -> None:
@@ -153,12 +145,10 @@ def _set_header_from_context(
     # We need at least a trace to propagate context
     # Inside `with agents_trace()`, there's a trace but might not be a span
     if current_trace is None:
-        _debug(f"_set_header_from_context: no current trace, skipping")
         return
 
     # Skip if trace is NoOp-like (check trace_id)
     if current_trace.trace_id == "no-op":
-        _debug(f"_set_header_from_context: trace is no-op, skipping")
         return
 
     # Build header data with trace info (span might be None)
@@ -170,9 +160,6 @@ def _set_header_from_context(
     # Add span info if available and not NoOp
     if current_span is not None and not isinstance(current_span, NoOpSpan):
         header_data["spanId"] = current_span.span_id
-        _debug(f"_set_header_from_context: setting headers with trace={current_trace.trace_id[:16]}... span={current_span.span_id[:16]}...")
-    else:
-        _debug(f"_set_header_from_context: setting headers with trace={current_trace.trace_id[:16]}... (no span)")
 
     # Capture OTEL context for trace continuity
     otel_span = otel_trace.get_current_span()
@@ -211,10 +198,6 @@ def _attach_context_from_header(
         yield
         return
 
-    is_activity = activity.in_activity()
-    context_type = "activity" if is_activity else "workflow"
-    _debug(f"_attach_context_from_header ({context_type}): restoring context")
-
     # Restore OTEL context for proper span parenting in OTEL exporters
     otel_token = None
     if "otelTraceId" in span_info and "otelSpanId" in span_info:
@@ -227,7 +210,6 @@ def _attach_context_from_header(
         parent_span_carrier = NonRecordingSpan(parent_ctx)
         otel_context = set_span_in_context(parent_span_carrier)
         otel_token = attach(otel_context)
-        _debug(f"_attach_context_from_header ({context_type}): attached OTEL parent context")
 
     # Restore SDK trace/span context using carrier objects
     # This allows custom_span() to work without requiring explicit trace() calls
@@ -241,12 +223,10 @@ def _attach_context_from_header(
     if trace_id:
         carrier_trace = CarrierTrace(name=trace_name, trace_id=trace_id)
         carrier_trace.start(mark_as_current=True)
-        _debug(f"_attach_context_from_header ({context_type}): set carrier trace {trace_id[:16]}...")
 
     if span_id and trace_id:
         carrier_span = CarrierSpan(trace_id=trace_id, span_id=span_id)
         carrier_span.start(mark_as_current=True)
-        _debug(f"_attach_context_from_header ({context_type}): set carrier span {span_id[:16]}...")
 
     try:
         yield
@@ -309,9 +289,6 @@ class _ClientOutboundInterceptor(temporalio.client.OutboundInterceptor):
     async def start_workflow(
         self, input: temporalio.client.StartWorkflowInput
     ) -> temporalio.client.WorkflowHandle[Any, Any]:
-        # Just propagate existing context - don't create traces
-        # The business code creates its own traces with `with trace(...)`
-        _debug(f"client.start_workflow: propagating context")
         _set_header_from_context(input, self._payload_converter)
         return await super().start_workflow(input)
 
@@ -342,13 +319,9 @@ class _ActivityInboundInterceptor(temporalio.worker.ActivityInboundInterceptor):
     async def execute_activity(
         self, input: temporalio.worker.ExecuteActivityInput
     ) -> Any:
-        _debug(f"ActivityInbound.execute_activity called")
-        # Attach context but NO temporal:executeActivity span
         with _attach_context_from_header(input, temporalio.activity.payload_converter()):
             return await self.next.execute_activity(input)
 
-
-_workflow_interceptor_counter = 0
 
 def _ensure_tracing_random() -> None:
     """Ensure the workflow instance has a deterministic random generator for tracing.
@@ -378,24 +351,15 @@ def _store_otel_parent_context(otel_trace_id: int, otel_span_id: int) -> None:
         "trace_id": otel_trace_id,
         "span_id": otel_span_id,
     })
-    _debug(f"_store_otel_parent_context: stored trace_id={format(otel_trace_id, '032x')} span_id={format(otel_span_id, '016x')}")
 
 
 class _WorkflowInboundInterceptor(temporalio.worker.WorkflowInboundInterceptor):
-    def __init__(self, next: temporalio.worker.WorkflowInboundInterceptor) -> None:
-        super().__init__(next)
-        global _workflow_interceptor_counter
-        _workflow_interceptor_counter += 1
-        self._id = _workflow_interceptor_counter
-        _debug(f"WorkflowInboundInterceptor #{self._id} created")
-
     def init(self, outbound: temporalio.worker.WorkflowOutboundInterceptor) -> None:
         self.next.init(_WorkflowOutboundInterceptor(outbound))
 
     async def execute_workflow(
         self, input: temporalio.worker.ExecuteWorkflowInput
     ) -> Any:
-        _debug(f"WorkflowInbound #{self._id}.execute_workflow called")
         _ensure_tracing_random()  # Required for TemporalTraceProvider
 
         # Store OTEL parent context on workflow instance for sandbox propagation

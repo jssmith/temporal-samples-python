@@ -59,3 +59,68 @@ The example demonstrates several Temporal patterns:
 - Parallel execution of web searches using `asyncio.create_task`
 - Use of `workflow.as_completed` for handling concurrent tasks
 - Proper import handling with `workflow.unsafe.imports_passed_through()`
+
+## OpenTelemetry Tracing
+
+This sample includes full OpenTelemetry trace propagation across client → Temporal → worker boundaries.
+
+### Architecture
+
+Uses a **two-plugin architecture** for clean separation of concerns:
+
+```
+┌─────────────────────────────────────┐
+│ 1. OpenAIAgentsPlugin (vanilla)     │  ← Agent infrastructure
+│    - activities, data_converter     │
+│    - workflow_runner, sandbox       │
+└──────────────┬──────────────────────┘
+               ↓
+┌─────────────────────────────────────┐
+│ 2. OtelTracingPlugin                │  ← OTEL context propagation
+│    - REPLACES default interceptors  │
+│    - Sets up ParentAwareProcessor   │
+└─────────────────────────────────────┘
+```
+
+### Key Components
+
+| File | Purpose |
+|------|---------|
+| `otel_tracing_plugin.py` | Plugin that provides OTEL context propagation |
+| `openai_agents_context_interceptor.py` | Interceptor for propagating trace context |
+| `parent_aware_tracing_processor.py` | Maintains trace ID continuity across boundaries |
+| `otel_config.py` | Shared OTEL configuration |
+
+### Configuration
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP gRPC endpoint |
+
+### Trace Structure
+
+All spans share a single OTEL trace ID:
+
+```
+Financial research trace (client)
+└── Financial research trace (worker)
+    └── Agent spans...
+        └── LLM call spans...
+```
+
+### How It Works
+
+The challenge: When a workflow executes on a worker, it runs in a different process with an isolated sandbox. By default, this would create a new trace ID.
+
+The solution:
+1. **Context Propagation**: Inject SDK trace context and OTEL span context into Temporal headers
+2. **Parent-Aware Processing**: Respect existing OTEL parent context when creating new traces
+3. **Sandbox Workaround**: Store OTEL parent context on the workflow instance (accessible within sandbox)
+
+### Testing
+
+```bash
+uv run python -m pytest openai_agents/financial_research_agent/test_trace_quality.py -v
+```
+
+Tests verify: single trace ID, no duplicates, proper parent-child relationships, no disconnected spans.

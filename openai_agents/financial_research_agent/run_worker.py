@@ -2,36 +2,19 @@
 
 import asyncio
 
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk import trace as trace_sdk
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.resources import Resource
-
 from temporalio.client import Client
 from temporalio.worker import Worker
 from temporalio.contrib.openai_agents import OpenAIAgentsPlugin
 
+from openai_agents.financial_research_agent.otel_config import create_tracer_provider, get_otlp_endpoint
 from openai_agents.financial_research_agent.otel_tracing_plugin import OtelTracingPlugin
 from openai_agents.financial_research_agent.workflows.financial_research_workflow import (
     FinancialResearchWorkflow,
 )
 
 
-def setup_otel_tracing() -> trace_sdk.TracerProvider:
-    """Setup OpenTelemetry tracing with OTLP exporter."""
-    resource = Resource.create(
-        attributes={
-            "service.name": "financial-research-agent-worker",
-        }
-    )
-    tracer_provider = trace_sdk.TracerProvider(resource=resource)
-    otlp_exporter = OTLPSpanExporter(endpoint="http://localhost:4317", insecure=True)
-    tracer_provider.add_span_processor(SimpleSpanProcessor(otlp_exporter))
-    return tracer_provider
-
-
 async def main():
-    tracer_provider = setup_otel_tracing()
+    tracer_provider = create_tracer_provider("financial-research-agent-worker")
 
     # Two-plugin architecture:
     # 1. OpenAIAgentsPlugin - activities, data converter, sandbox, model params
@@ -51,7 +34,7 @@ async def main():
     )
 
     print("Starting financial research worker with OpenTelemetry tracing...")
-    print("Traces exported to: http://localhost:4317 (OpenAI Agents spans only)")
+    print(f"Traces exported to: {get_otlp_endpoint()}")
     await worker.run()
 
 
