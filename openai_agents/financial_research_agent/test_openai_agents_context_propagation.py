@@ -13,11 +13,7 @@ from datetime import timedelta
 
 import pytest
 from agents import custom_span, trace as agents_trace
-from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
-from opentelemetry import trace
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from temporalio import activity, workflow
@@ -29,33 +25,13 @@ from openai_agents.financial_research_agent.openai_agents_context_interceptor im
     OpenAIAgentsContextInterceptor,
 )
 
+# Uses shared fixtures from conftest.py (tracing)
 
 # Skip if no API key
 pytestmark = pytest.mark.skipif(
     not os.environ.get("OPENAI_API_KEY"),
     reason="OPENAI_API_KEY not set"
 )
-
-# Force OTEL context loading
-trace.get_tracer(__name__)
-
-
-_provider: TracerProvider | None = None
-_exporter: InMemorySpanExporter | None = None
-
-
-def setup_tracing() -> tuple[TracerProvider, InMemorySpanExporter]:
-    """Setup OTEL with in-memory exporter. Only initializes once per process."""
-    global _provider, _exporter
-
-    if _provider is None:
-        _provider = TracerProvider(resource=Resource.create({"service.name": "test"}))
-        _exporter = InMemorySpanExporter()
-        _provider.add_span_processor(SimpleSpanProcessor(_exporter))
-        trace.set_tracer_provider(_provider)
-        OpenAIAgentsInstrumentor().instrument(tracer_provider=_provider)
-
-    return _provider, _exporter
 
 
 # Simplest possible activity
@@ -95,14 +71,6 @@ def dump_spans(spans: list[ReadableSpan]) -> None:
         print(f"  {name}")
         print(f"    span_id={s.context.span_id:016x}, {parent_info}")
         print(f"    trace_id={s.context.trace_id:032x}")
-
-
-@pytest.fixture
-def tracing():
-    """Setup tracing."""
-    _, exporter = setup_tracing()
-    yield exporter
-    exporter.clear()
 
 
 @pytest.mark.asyncio
@@ -276,5 +244,6 @@ async def test_span_hierarchy(tracing: InMemorySpanExporter):
 
 
 if __name__ == "__main__":
-    _, exporter = setup_tracing()
+    from openai_agents.financial_research_agent.conftest import _setup_shared_tracing
+    _, exporter = _setup_shared_tracing()
     asyncio.run(test_minimal_workflow(exporter))

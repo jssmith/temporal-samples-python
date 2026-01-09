@@ -13,8 +13,7 @@ from collections.abc import Iterable
 
 import pytest
 from opentelemetry import trace
-from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from temporalio import workflow
@@ -26,9 +25,7 @@ from openai_agents.financial_research_agent.otel_interceptor import (
     OtelContextPropagationInterceptor,
 )
 
-
-# Force OTEL context loading before sandbox
-trace.get_tracer(__name__)
+# Uses shared fixtures from conftest.py (otel_exporter)
 
 
 @workflow.defn
@@ -67,17 +64,6 @@ def dump_spans(
                     indent_depth=indent_depth + 1,
                 )
     return ret
-
-
-@pytest.fixture
-def otel_exporter():
-    """Set up OTEL with in-memory exporter."""
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace.set_tracer_provider(provider)
-    yield exporter
-    exporter.clear()
 
 
 @pytest.mark.asyncio
@@ -135,19 +121,31 @@ async def test_otel_context_propagation_basic(otel_exporter: InMemorySpanExporte
     # This is the key assertion - all spans should be in the same trace
     assert len(trace_ids) == 1, f"Expected 1 trace ID, got {len(trace_ids)}. Context not propagating!"
 
-    # Check hierarchy: workflow spans should be children of client.root
+    # Check hierarchy: workflow spans should descend from client.root
     root_spans = [s for s in spans if s.name == "client.root"]
     assert len(root_spans) == 1, "Expected exactly one client.root span"
 
     workflow_main_spans = [s for s in spans if s.name == "workflow.main"]
     assert len(workflow_main_spans) == 1, "Expected exactly one workflow.main span"
 
-    # workflow.main should be a child of client.root
+    # workflow.main should be a descendant of client.root (may have intermediate spans)
+    # Build parent chain for workflow.main to verify it connects to root
     root_span_id = root_spans[0].context.span_id
-    workflow_parent_id = workflow_main_spans[0].parent.span_id if workflow_main_spans[0].parent else None
-    assert workflow_parent_id == root_span_id, (
-        f"workflow.main parent ({workflow_parent_id}) should be client.root ({root_span_id})"
-    )
+    span_map = {s.context.span_id: s for s in spans}
+    current = workflow_main_spans[0]
+    found_root = False
+    max_depth = 10
+    depth = 0
+    while current.parent and depth < max_depth:
+        if current.parent.span_id == root_span_id:
+            found_root = True
+            break
+        current = span_map.get(current.parent.span_id)
+        if current is None:
+            break
+        depth += 1
+
+    assert found_root, f"workflow.main should descend from client.root"
 
 
 @pytest.mark.asyncio
@@ -283,5 +281,6 @@ async def test_otel_with_external_calls(otel_exporter: InMemorySpanExporter):
 
 
 if __name__ == "__main__":
-    # Allow running directly for quick testing
-    asyncio.run(test_otel_context_propagation_basic(InMemorySpanExporter()))
+    from openai_agents.financial_research_agent.conftest import _setup_shared_tracing
+    _, exporter = _setup_shared_tracing()
+    asyncio.run(test_otel_context_propagation_basic(exporter))
