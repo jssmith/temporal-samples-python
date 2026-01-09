@@ -25,7 +25,7 @@ def create_tracer_provider(service_name: str) -> trace_sdk.TracerProvider:
     """Create a TracerProvider configured for OTLP export.
 
     Args:
-        service_name: The service name to use in traces (e.g., "financial-research-agent-worker").
+        service_name: The service name to use in traces.
 
     Returns:
         Configured TracerProvider ready for use.
@@ -39,6 +39,8 @@ def create_tracer_provider(service_name: str) -> trace_sdk.TracerProvider:
 
     endpoint = get_otlp_endpoint()
     otlp_exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
-    tracer_provider.add_span_processor(SimpleSpanProcessor(otlp_exporter))
+    processor = SimpleSpanProcessor(otlp_exporter)
+
+    tracer_provider.add_span_processor(processor)
 
     return tracer_provider

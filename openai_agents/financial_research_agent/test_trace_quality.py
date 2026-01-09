@@ -2,6 +2,10 @@
 
 These tests verify that the OpenAI Agents context propagation through Temporal
 produces clean, well-structured traces without duplication.
+
+Uses the new simplified approach:
+1. TemporalAwareContext - Custom OTEL context that survives sandbox isolation
+2. TracingInterceptor(create_spans=False) - Context propagation without Temporal spans
 """
 
 from __future__ import annotations
@@ -19,12 +23,9 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from temporalio import activity, workflow
 from temporalio.client import Client
+from temporalio.contrib.opentelemetry import TracingInterceptor
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
-
-from openai_agents.financial_research_agent.openai_agents_context_interceptor import (
-    OpenAIAgentsContextInterceptor,
-)
 
 # Uses shared fixtures from conftest.py (tracing)
 
@@ -125,14 +126,11 @@ class TestTraceDuplication:
     @pytest.mark.asyncio
     async def test_single_trace_name_should_appear_once(self, tracing: InMemorySpanExporter):
         """
-        ISSUE: When a workflow creates a trace with `with trace("name")`,
-        that trace name should appear exactly once in the output, not multiple times.
-
-        Currently failing because the interceptor creates additional traces
-        on each workflow/activity context attachment.
+        When a workflow creates a trace with `with trace("name")`,
+        that trace name should appear exactly once in the output.
         """
         async with await WorkflowEnvironment.start_local() as env:
-            interceptor = OpenAIAgentsContextInterceptor()
+            interceptor = TracingInterceptor(create_spans=False)
             client_config = env.client.config()
             client_config["interceptors"] = [interceptor]
             client = Client(**client_config)
@@ -161,11 +159,10 @@ class TestTraceDuplication:
         # Find all spans named "test_trace"
         trace_spans = get_spans_by_name(spans, "test_trace")
 
-        # EXPECTED: Exactly 1 span named "test_trace"
-        # ACTUAL (bug): Multiple spans with this name due to duplication
+        # Should have exactly 1 span named "test_trace"
         assert len(trace_spans) == 1, (
             f"Expected exactly 1 'test_trace' span, but found {len(trace_spans)}. "
-            f"This indicates trace duplication in the interceptor. "
+            f"This indicates trace duplication. "
             f"Span details: {[(s.name, s.context.span_id) for s in trace_spans]}"
         )
 
@@ -175,7 +172,7 @@ class TestTraceDuplication:
         All spans from a single workflow execution should share the same trace ID.
         """
         async with await WorkflowEnvironment.start_local() as env:
-            interceptor = OpenAIAgentsContextInterceptor()
+            interceptor = TracingInterceptor(create_spans=False)
             client_config = env.client.config()
             client_config["interceptors"] = [interceptor]
             client = Client(**client_config)
@@ -213,14 +210,11 @@ class TestSpanConnectivity:
     @pytest.mark.asyncio
     async def test_no_disconnected_spans(self, tracing: InMemorySpanExporter):
         """
-        ISSUE: All spans should form a connected tree - each span's parent
+        All spans should form a connected tree - each span's parent
         should either be another span in the trace or be the root.
-
-        Currently failing because LLM response spans have parents that
-        don't appear in the exported trace.
         """
         async with await WorkflowEnvironment.start_local() as env:
-            interceptor = OpenAIAgentsContextInterceptor()
+            interceptor = TracingInterceptor(create_spans=False)
             client_config = env.client.config()
             client_config["interceptors"] = [interceptor]
             client = Client(**client_config)
@@ -257,7 +251,7 @@ class TestSpanConnectivity:
         Activity spans should be children of workflow spans, forming a proper hierarchy.
         """
         async with await WorkflowEnvironment.start_local() as env:
-            interceptor = OpenAIAgentsContextInterceptor()
+            interceptor = TracingInterceptor(create_spans=False)
             client_config = env.client.config()
             client_config["interceptors"] = [interceptor]
             client = Client(**client_config)
@@ -303,16 +297,13 @@ class TestTraceWarnings:
     @pytest.mark.asyncio
     async def test_no_trace_already_exists_warnings(self, tracing: InMemorySpanExporter, caplog):
         """
-        ISSUE: The worker logs "Trace already exists. Creating a new trace,
+        The worker should not log "Trace already exists. Creating a new trace,
         but this is probably a mistake." warnings.
-
-        This indicates the interceptor is trying to create traces when one
-        already exists, which leads to duplication.
         """
         # Capture warnings from the openai.agents logger
         with caplog.at_level(logging.WARNING, logger="openai.agents"):
             async with await WorkflowEnvironment.start_local() as env:
-                interceptor = OpenAIAgentsContextInterceptor()
+                interceptor = TracingInterceptor(create_spans=False)
                 client_config = env.client.config()
                 client_config["interceptors"] = [interceptor]
                 client = Client(**client_config)
@@ -343,7 +334,7 @@ class TestTraceWarnings:
 
         assert len(trace_warnings) == 0, (
             f"Found {len(trace_warnings)} 'Trace already exists' warnings. "
-            f"This indicates duplicate trace creation in the interceptor."
+            f"This indicates duplicate trace creation."
         )
 
 
@@ -364,7 +355,7 @@ class TestSpanCounts:
         Total: ~3-5 spans maximum
         """
         async with await WorkflowEnvironment.start_local() as env:
-            interceptor = OpenAIAgentsContextInterceptor()
+            interceptor = TracingInterceptor(create_spans=False)
             client_config = env.client.config()
             client_config["interceptors"] = [interceptor]
             client = Client(**client_config)

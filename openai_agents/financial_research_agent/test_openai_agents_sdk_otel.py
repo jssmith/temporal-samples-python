@@ -5,6 +5,10 @@ Verifies that:
 1. Agent-only execution generates expected OTEL spans
 2. Agent via Temporal generates spans without losing any
 3. Temporal may add context spans but doesn't lose agent spans
+
+Uses the new simplified approach:
+1. TemporalAwareContext - Custom OTEL context that survives sandbox isolation
+2. TracingInterceptor(create_spans=False) - Context propagation without Temporal spans
 """
 
 from __future__ import annotations
@@ -21,12 +25,9 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from temporalio import activity, workflow
 from temporalio.client import Client
+from temporalio.contrib.opentelemetry import TracingInterceptor
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
-
-from openai_agents.financial_research_agent.openai_agents_context_interceptor import (
-    OpenAIAgentsContextInterceptor,
-)
 
 # Uses shared fixtures from conftest.py (tracing)
 
@@ -118,7 +119,7 @@ async def test_agent_direct_spans(tracing: InMemorySpanExporter):
 async def test_agent_temporal_spans(tracing: InMemorySpanExporter):
     """Run agent through Temporal, verify spans are captured."""
     async with await WorkflowEnvironment.start_local() as env:
-        interceptor = OpenAIAgentsContextInterceptor()
+        interceptor = TracingInterceptor(create_spans=False)
         client_config = env.client.config()
         client_config["interceptors"] = [interceptor]
         client = Client(**client_config)
@@ -186,7 +187,7 @@ async def test_temporal_preserves_agent_spans(tracing: InMemorySpanExporter):
 
     # Run via Temporal
     async with await WorkflowEnvironment.start_local() as env:
-        interceptor = OpenAIAgentsContextInterceptor()
+        interceptor = TracingInterceptor(create_spans=False)
         client_config = env.client.config()
         client_config["interceptors"] = [interceptor]
         client = Client(**client_config)

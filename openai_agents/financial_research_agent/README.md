@@ -77,8 +77,8 @@ Uses a **two-plugin architecture** for clean separation of concerns:
                ↓
 ┌─────────────────────────────────────┐
 │ 2. OtelTracingPlugin                │  ← OTEL context propagation
-│    - REPLACES default interceptors  │
-│    - Sets up ParentAwareProcessor   │
+│    - TracingInterceptor(create_spans=False)
+│    - Sets OTEL_PYTHON_CONTEXT       │
 └─────────────────────────────────────┘
 ```
 
@@ -87,15 +87,31 @@ Uses a **two-plugin architecture** for clean separation of concerns:
 | File | Purpose |
 |------|---------|
 | `otel_tracing_plugin.py` | Plugin that provides OTEL context propagation |
-| `openai_agents_context_interceptor.py` | Interceptor for propagating trace context |
-| `parent_aware_tracing_processor.py` | Maintains trace ID continuity across boundaries |
 | `otel_config.py` | Shared OTEL configuration |
+
+### How It Works
+
+The challenge: Temporal's workflow sandbox isolates Python's `contextvars`, which breaks OpenTelemetry's default context propagation. This means `get_current_span()` returns nothing inside the sandbox.
+
+The solution uses two Temporal SDK features:
+
+1. **TemporalAwareContext** (custom OTEL context implementation):
+   - Set via `OTEL_PYTHON_CONTEXT=temporal_aware_context`
+   - Stores context on both `contextvars` AND `workflow.instance()`
+   - When inside sandbox, falls back to `workflow.instance()` storage
+   - Makes `get_current_span()` work transparently inside workflows
+
+2. **TracingInterceptor(create_spans=False)**:
+   - Propagates W3C TraceContext via Temporal headers
+   - Does NOT create Temporal infrastructure spans
+   - Results in clean traces with only your application spans
 
 ### Configuration
 
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP gRPC endpoint |
+| `OTEL_PYTHON_CONTEXT` | `temporal_aware_context` | Custom OTEL context (set by plugin) |
 
 ### Trace Structure
 
@@ -107,15 +123,6 @@ Financial research trace (client)
     └── Agent spans...
         └── LLM call spans...
 ```
-
-### How It Works
-
-The challenge: When a workflow executes on a worker, it runs in a different process with an isolated sandbox. By default, this would create a new trace ID.
-
-The solution:
-1. **Context Propagation**: Inject SDK trace context and OTEL span context into Temporal headers
-2. **Parent-Aware Processing**: Respect existing OTEL parent context when creating new traces
-3. **Sandbox Workaround**: Store OTEL parent context on the workflow instance (accessible within sandbox)
 
 ### Testing
 

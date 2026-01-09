@@ -18,8 +18,9 @@ async def main():
 
     # Two-plugin architecture:
     # 1. OpenAIAgentsPlugin - activities, data converter, sandbox, model params
-    # 2. OtelTracingPlugin - OTEL context propagation (replaces default interceptors)
-    openai_plugin = OpenAIAgentsPlugin()
+    #    create_spans=False to suppress temporal:* spans from OpenAI Agents interceptor
+    # 2. OtelTracingPlugin - OTEL context propagation (replaces default OTEL interceptors)
+    openai_plugin = OpenAIAgentsPlugin(create_spans=False)
     otel_plugin = OtelTracingPlugin(tracer_provider=tracer_provider)
 
     client = await Client.connect(

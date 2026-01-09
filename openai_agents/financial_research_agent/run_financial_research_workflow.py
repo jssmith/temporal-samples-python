@@ -24,9 +24,9 @@ async def main():
         print(f"Using default query: {query}")
 
     # Two-plugin architecture:
-    # 1. OpenAIAgentsPlugin - data converter (client side)
+    # 1. OpenAIAgentsPlugin - data converter (client side), create_spans=False
     # 2. OtelTracingPlugin - OTEL context propagation
-    openai_plugin = OpenAIAgentsPlugin()
+    openai_plugin = OpenAIAgentsPlugin(create_spans=False)
     otel_plugin = OtelTracingPlugin(tracer_provider=tracer_provider)
 
     client = await Client.connect(

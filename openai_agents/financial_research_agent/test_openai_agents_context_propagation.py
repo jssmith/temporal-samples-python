@@ -1,7 +1,9 @@
 """
 Minimal test for OpenAI Agents context propagation through Temporal workflows.
 
-Start with the simplest possible test and build up from there.
+This tests the new simplified approach using:
+1. TemporalAwareContext - Custom OTEL context that survives sandbox isolation
+2. TracingInterceptor(create_spans=False) - Context propagation without Temporal spans
 """
 
 from __future__ import annotations
@@ -18,12 +20,9 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from temporalio import activity, workflow
 from temporalio.client import Client
+from temporalio.contrib.opentelemetry import TracingInterceptor
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
-
-from openai_agents.financial_research_agent.openai_agents_context_interceptor import (
-    OpenAIAgentsContextInterceptor,
-)
 
 # Uses shared fixtures from conftest.py (tracing)
 
@@ -77,8 +76,8 @@ def dump_spans(spans: list[ReadableSpan]) -> None:
 async def test_minimal_workflow(tracing: InMemorySpanExporter):
     """Test 1: Just run a workflow, verify it completes."""
     async with await WorkflowEnvironment.start_local() as env:
-        # Use interceptor directly like production does
-        interceptor = OpenAIAgentsContextInterceptor()
+        # Use TracingInterceptor with create_spans=False
+        interceptor = TracingInterceptor(create_spans=False)
 
         client_config = env.client.config()
         client_config["interceptors"] = [interceptor]
@@ -111,7 +110,7 @@ async def test_minimal_workflow(tracing: InMemorySpanExporter):
     names = [s.name for s in spans]
     assert "activity_span" in names, f"Missing activity_span, got: {names}"
 
-    # Verify reduced span count (was 6-8, now should be <=5)
+    # Verify reduced span count (no Temporal spans, only application spans)
     assert len(spans) <= 5, f"Expected <=5 spans, got {len(spans)}"
 
     # Verify all spans share the same trace_id
@@ -123,8 +122,8 @@ async def test_minimal_workflow(tracing: InMemorySpanExporter):
 async def test_with_client_trace(tracing: InMemorySpanExporter):
     """Test 2: Add client-side trace, verify activity is connected."""
     async with await WorkflowEnvironment.start_local() as env:
-        # Use interceptor directly like production does
-        interceptor = OpenAIAgentsContextInterceptor()
+        # Use TracingInterceptor with create_spans=False
+        interceptor = TracingInterceptor(create_spans=False)
         client_config = env.client.config()
         client_config["interceptors"] = [interceptor]
         client = Client(**client_config)
@@ -186,8 +185,8 @@ async def test_with_client_trace(tracing: InMemorySpanExporter):
 async def test_span_hierarchy(tracing: InMemorySpanExporter):
     """Test 3: Verify activity_span has valid parent chain to root."""
     async with await WorkflowEnvironment.start_local() as env:
-        # Use interceptor directly like production does
-        interceptor = OpenAIAgentsContextInterceptor()
+        # Use TracingInterceptor with create_spans=False
+        interceptor = TracingInterceptor(create_spans=False)
         client_config = env.client.config()
         client_config["interceptors"] = [interceptor]
         client = Client(**client_config)
