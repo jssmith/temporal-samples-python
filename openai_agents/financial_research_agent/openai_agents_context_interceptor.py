@@ -135,11 +135,12 @@ class CarrierSpan:
         return None
 
 
-# Debug flag
+# Debug flag - set to True to enable debug output
 _DEBUG = False
 def _debug(msg: str) -> None:
     if _DEBUG:
-        print(f"[INTERCEPTOR] {msg}")
+        import sys
+        print(f"[INTERCEPTOR] {msg}", file=sys.stderr, flush=True)
 
 
 def _set_header_from_context(
@@ -361,6 +362,25 @@ def _ensure_tracing_random() -> None:
         setattr(instance, "__temporal_openai_tracing_random", RunIdRandom())
 
 
+# Attribute name for storing OTEL parent context on workflow instance
+OTEL_PARENT_CONTEXT_ATTR = "__otel_parent_context"
+
+
+def _store_otel_parent_context(otel_trace_id: int, otel_span_id: int) -> None:
+    """Store OTEL parent context on workflow instance for sandbox propagation.
+
+    The workflow sandbox isolates Python state, so we can't use attach() to
+    propagate OTEL context. Instead, store the IDs on the workflow instance
+    which IS accessible from inside the sandbox.
+    """
+    instance = workflow.instance()
+    setattr(instance, OTEL_PARENT_CONTEXT_ATTR, {
+        "trace_id": otel_trace_id,
+        "span_id": otel_span_id,
+    })
+    _debug(f"_store_otel_parent_context: stored trace_id={format(otel_trace_id, '032x')} span_id={format(otel_span_id, '016x')}")
+
+
 class _WorkflowInboundInterceptor(temporalio.worker.WorkflowInboundInterceptor):
     def __init__(self, next: temporalio.worker.WorkflowInboundInterceptor) -> None:
         super().__init__(next)
@@ -377,6 +397,19 @@ class _WorkflowInboundInterceptor(temporalio.worker.WorkflowInboundInterceptor):
     ) -> Any:
         _debug(f"WorkflowInbound #{self._id}.execute_workflow called")
         _ensure_tracing_random()  # Required for TemporalTraceProvider
+
+        # Store OTEL parent context on workflow instance for sandbox propagation
+        # This must be done BEFORE entering the context manager because
+        # the sandbox isolates Python state
+        payload = input.headers.get(HEADER_KEY)
+        if payload:
+            span_info = temporalio.workflow.payload_converter().from_payload(payload)
+            if span_info and "otelTraceId" in span_info and "otelSpanId" in span_info:
+                _store_otel_parent_context(
+                    otel_trace_id=int(span_info["otelTraceId"], 16),
+                    otel_span_id=int(span_info["otelSpanId"], 16),
+                )
+
         # Attach context but NO temporal:executeWorkflow span
         with _attach_context_from_header(input, temporalio.workflow.payload_converter()):
             return await self.next.execute_workflow(input)

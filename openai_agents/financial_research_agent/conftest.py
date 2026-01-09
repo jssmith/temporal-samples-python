@@ -7,12 +7,15 @@ when running multiple test files together.
 from __future__ import annotations
 
 import pytest
-from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+from openai_agents.financial_research_agent.parent_aware_tracing_processor import (
+    setup_parent_aware_tracing,
+)
 
 
 # Global provider/exporter - only initialized once per process
@@ -34,7 +37,8 @@ def _setup_shared_tracing() -> tuple[TracerProvider, InMemorySpanExporter]:
         trace.set_tracer_provider(_provider)
 
     if not _instrumented:
-        OpenAIAgentsInstrumentor().instrument(tracer_provider=_provider)
+        # Use custom parent-aware processor that respects OTEL parent context
+        setup_parent_aware_tracing(_provider)
         _instrumented = True
 
     return _provider, _exporter

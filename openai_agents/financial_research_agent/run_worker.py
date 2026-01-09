@@ -2,7 +2,6 @@
 
 import asyncio
 
-from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk import trace as trace_sdk
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -13,6 +12,9 @@ from temporalio.worker import Worker
 
 from openai_agents.financial_research_agent.openai_agents_context_interceptor import (
     OpenAIAgentsPluginNoTemporalSpans,
+)
+from openai_agents.financial_research_agent.parent_aware_tracing_processor import (
+    setup_parent_aware_tracing,
 )
 from openai_agents.financial_research_agent.workflows.financial_research_workflow import (
     FinancialResearchWorkflow,
@@ -30,8 +32,9 @@ def setup_otel_tracing() -> trace_sdk.TracerProvider:
     otlp_exporter = OTLPSpanExporter(endpoint="http://localhost:4317", insecure=True)
     tracer_provider.add_span_processor(SimpleSpanProcessor(otlp_exporter))
 
-    # Instrument OpenAI Agents SDK - converts native spans to OTel
-    OpenAIAgentsInstrumentor().instrument(tracer_provider=tracer_provider)
+    # Use custom parent-aware processor that respects OTEL parent context
+    # This fixes trace ID propagation from client to worker
+    setup_parent_aware_tracing(tracer_provider)
 
     return tracer_provider
 
