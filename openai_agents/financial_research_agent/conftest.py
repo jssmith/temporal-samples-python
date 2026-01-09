@@ -14,7 +14,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from openai_agents.financial_research_agent.parent_aware_tracing_processor import (
-    setup_parent_aware_tracing,
+    setup_tracing,
 )
 
 
@@ -38,7 +38,7 @@ def _setup_shared_tracing() -> tuple[TracerProvider, InMemorySpanExporter]:
 
     if not _instrumented:
         # Use custom parent-aware processor that respects OTEL parent context
-        setup_parent_aware_tracing(_provider)
+        setup_tracing(_provider)
         _instrumented = True
 
     return _provider, _exporter

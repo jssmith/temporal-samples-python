@@ -139,7 +139,7 @@ class ParentAwareTracingProcessor(OpenInferenceTracingProcessor):
         super().on_trace_end(trace)
 
 
-def setup_parent_aware_tracing(tracer_provider: TracerProvider) -> None:
+def setup_tracing(tracer_provider: TracerProvider) -> None:
     """Setup tracing with our custom parent-aware processor.
 
     This replaces OpenAIAgentsInstrumentor().instrument() with our custom

@@ -28,7 +28,7 @@ from openai_agents.financial_research_agent.openai_agents_context_interceptor im
     OpenAIAgentsContextInterceptor,
 )
 from openai_agents.financial_research_agent.parent_aware_tracing_processor import (
-    setup_parent_aware_tracing,
+    setup_tracing,
 )
 
 if TYPE_CHECKING:
@@ -47,13 +47,13 @@ class OtelTracingPlugin(SimplePlugin):
 
     Args:
         tracer_provider: The OTEL TracerProvider to use for creating spans.
-            If provided, setup_parent_aware_tracing() will be called automatically.
+            If provided, setup_tracing() will be called automatically.
     """
 
     def __init__(self, tracer_provider: TracerProvider | None = None) -> None:
         # Set up parent-aware tracing if provider given
         if tracer_provider is not None:
-            setup_parent_aware_tracing(tracer_provider)
+            setup_tracing(tracer_provider)
 
         # Use callable to REPLACE interceptors (not append)
         # This works because SimplePlugin's _resolve_append_parameter() handles
