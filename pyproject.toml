@@ -52,6 +52,7 @@ nexus = [
 open-telemetry = [
     "temporalio[opentelemetry]",
     "opentelemetry-exporter-otlp-proto-grpc",
+    "openinference-instrumentation-openai-agents>=0.1.0",
 ]
 openai-agents = [
     "openai-agents[litellm] == 0.3.2",

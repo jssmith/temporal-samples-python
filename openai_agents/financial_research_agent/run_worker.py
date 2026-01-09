@@ -2,20 +2,47 @@
 
 import asyncio
 
+from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk import trace as trace_sdk
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.resources import Resource
+
 from temporalio.client import Client
-from temporalio.contrib.openai_agents import OpenAIAgentsPlugin
 from temporalio.worker import Worker
 
+from openai_agents.financial_research_agent.openai_agents_context_interceptor import (
+    OpenAIAgentsPluginNoTemporalSpans,
+)
 from openai_agents.financial_research_agent.workflows.financial_research_workflow import (
     FinancialResearchWorkflow,
 )
 
 
+def setup_otel_tracing() -> trace_sdk.TracerProvider:
+    """Setup OpenTelemetry tracing with OTLP exporter."""
+    resource = Resource.create(
+        attributes={
+            "service.name": "financial-research-agent-worker",
+        }
+    )
+    tracer_provider = trace_sdk.TracerProvider(resource=resource)
+    otlp_exporter = OTLPSpanExporter(endpoint="http://localhost:4317", insecure=True)
+    tracer_provider.add_span_processor(SimpleSpanProcessor(otlp_exporter))
+
+    # Instrument OpenAI Agents SDK - converts native spans to OTel
+    OpenAIAgentsInstrumentor().instrument(tracer_provider=tracer_provider)
+
+    return tracer_provider
+
+
 async def main():
+    setup_otel_tracing()
+
     client = await Client.connect(
         "localhost:7233",
         plugins=[
-            OpenAIAgentsPlugin(),
+            OpenAIAgentsPluginNoTemporalSpans(),  # Context propagation without temporal:* spans
         ],
     )
 
@@ -25,7 +52,8 @@ async def main():
         workflows=[FinancialResearchWorkflow],
     )
 
-    print("Starting financial research worker...")
+    print("Starting financial research worker with OpenTelemetry tracing...")
+    print("Traces exported to: http://localhost:4317 (OpenAI Agents spans only)")
     await worker.run()
 
 
