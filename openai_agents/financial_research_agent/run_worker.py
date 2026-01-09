@@ -9,13 +9,9 @@ from opentelemetry.sdk.resources import Resource
 
 from temporalio.client import Client
 from temporalio.worker import Worker
+from temporalio.contrib.openai_agents import OpenAIAgentsPlugin
 
-from openai_agents.financial_research_agent.openai_agents_context_interceptor import (
-    OpenAIAgentsPluginNoTemporalSpans,
-)
-from openai_agents.financial_research_agent.parent_aware_tracing_processor import (
-    setup_parent_aware_tracing,
-)
+from openai_agents.financial_research_agent.otel_tracing_plugin import OtelTracingPlugin
 from openai_agents.financial_research_agent.workflows.financial_research_workflow import (
     FinancialResearchWorkflow,
 )
@@ -31,24 +27,21 @@ def setup_otel_tracing() -> trace_sdk.TracerProvider:
     tracer_provider = trace_sdk.TracerProvider(resource=resource)
     otlp_exporter = OTLPSpanExporter(endpoint="http://localhost:4317", insecure=True)
     tracer_provider.add_span_processor(SimpleSpanProcessor(otlp_exporter))
-
-    # Use custom parent-aware processor that respects OTEL parent context
-    # This fixes trace ID propagation from client to worker
-    setup_parent_aware_tracing(tracer_provider)
-
     return tracer_provider
 
 
 async def main():
-    setup_otel_tracing()
+    tracer_provider = setup_otel_tracing()
 
-    # Use Plugin for model activities and proper sandbox handling
-    # Our custom plugin uses OpenAIAgentsContextInterceptor for cleaner traces
-    plugin = OpenAIAgentsPluginNoTemporalSpans()
+    # Two-plugin architecture:
+    # 1. OpenAIAgentsPlugin - activities, data converter, sandbox, model params
+    # 2. OtelTracingPlugin - OTEL context propagation (replaces default interceptors)
+    openai_plugin = OpenAIAgentsPlugin()
+    otel_plugin = OtelTracingPlugin(tracer_provider=tracer_provider)
 
     client = await Client.connect(
         "localhost:7233",
-        plugins=[plugin],
+        plugins=[openai_plugin, otel_plugin],  # Order matters: otel_plugin replaces interceptors
     )
 
     worker = Worker(

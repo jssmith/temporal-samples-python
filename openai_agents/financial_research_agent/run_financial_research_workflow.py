@@ -9,14 +9,9 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.resources import Resource
 
 from temporalio.client import Client
+from temporalio.contrib.openai_agents import OpenAIAgentsPlugin
 
-from openai_agents.financial_research_agent.openai_agents_context_interceptor import (
-    OpenAIAgentsContextInterceptor,
-    OpenAIAgentsPluginNoTemporalSpans,
-)
-from openai_agents.financial_research_agent.parent_aware_tracing_processor import (
-    setup_parent_aware_tracing,
-)
+from openai_agents.financial_research_agent.otel_tracing_plugin import OtelTracingPlugin
 from openai_agents.financial_research_agent.workflows.financial_research_workflow import (
     FinancialResearchWorkflow,
 )
@@ -32,15 +27,11 @@ def setup_otel_tracing() -> trace_sdk.TracerProvider:
     tracer_provider = trace_sdk.TracerProvider(resource=resource)
     otlp_exporter = OTLPSpanExporter(endpoint="http://localhost:4317", insecure=True)
     tracer_provider.add_span_processor(SimpleSpanProcessor(otlp_exporter))
-
-    # Use custom parent-aware processor that respects OTEL parent context
-    setup_parent_aware_tracing(tracer_provider)
-
     return tracer_provider
 
 
 async def main():
-    setup_otel_tracing()
+    tracer_provider = setup_otel_tracing()
 
     # Get the query from user input
     query = input("Enter a financial research query: ")
@@ -48,14 +39,15 @@ async def main():
         query = "Write up an analysis of Apple Inc.'s most recent quarter."
         print(f"Using default query: {query}")
 
+    # Two-plugin architecture:
+    # 1. OpenAIAgentsPlugin - data converter (client side)
+    # 2. OtelTracingPlugin - OTEL context propagation
+    openai_plugin = OpenAIAgentsPlugin()
+    otel_plugin = OtelTracingPlugin(tracer_provider=tracer_provider)
+
     client = await Client.connect(
         "localhost:7233",
-        plugins=[
-            OpenAIAgentsPluginNoTemporalSpans(),  # Worker-side context propagation
-        ],
-        interceptors=[
-            OpenAIAgentsContextInterceptor(),  # Client-side context propagation
-        ],
+        plugins=[openai_plugin, otel_plugin],
     )
 
     print(f"Starting financial research for: {query}")
