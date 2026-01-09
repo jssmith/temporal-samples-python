@@ -77,8 +77,7 @@ def dump_spans(spans: list[ReadableSpan]) -> None:
 async def test_minimal_workflow(tracing: InMemorySpanExporter):
     """Test 1: Just run a workflow, verify it completes."""
     async with await WorkflowEnvironment.start_local() as env:
-        # Pass interceptor to Client only - Worker picks it up from Client
-        # (Don't also pass to Worker.interceptors - that causes duplicates!)
+        # Use interceptor directly like production does
         interceptor = OpenAIAgentsContextInterceptor()
 
         client_config = env.client.config()
@@ -93,7 +92,6 @@ async def test_minimal_workflow(tracing: InMemorySpanExporter):
             workflows=[SimpleWorkflow],
             activities=[simple_activity],
             workflow_runner=UnsandboxedWorkflowRunner(),
-            # NO interceptors here - Worker gets them from Client
         ):
             result = await client.execute_workflow(
                 SimpleWorkflow.run,
@@ -125,9 +123,10 @@ async def test_minimal_workflow(tracing: InMemorySpanExporter):
 async def test_with_client_trace(tracing: InMemorySpanExporter):
     """Test 2: Add client-side trace, verify activity is connected."""
     async with await WorkflowEnvironment.start_local() as env:
-        # Pass interceptor to Client only - Worker picks it up from Client
+        # Use interceptor directly like production does
+        interceptor = OpenAIAgentsContextInterceptor()
         client_config = env.client.config()
-        client_config["interceptors"] = [OpenAIAgentsContextInterceptor()]
+        client_config["interceptors"] = [interceptor]
         client = Client(**client_config)
 
         task_queue = f"test-{uuid.uuid4()}"
@@ -138,7 +137,6 @@ async def test_with_client_trace(tracing: InMemorySpanExporter):
             workflows=[SimpleWorkflow],
             activities=[simple_activity],
             workflow_runner=UnsandboxedWorkflowRunner(),
-            # NO interceptors here - Worker gets them from Client
         ):
             # Start with client-side trace
             with agents_trace("client_trace"):
@@ -188,8 +186,10 @@ async def test_with_client_trace(tracing: InMemorySpanExporter):
 async def test_span_hierarchy(tracing: InMemorySpanExporter):
     """Test 3: Verify activity_span has valid parent chain to root."""
     async with await WorkflowEnvironment.start_local() as env:
+        # Use interceptor directly like production does
+        interceptor = OpenAIAgentsContextInterceptor()
         client_config = env.client.config()
-        client_config["interceptors"] = [OpenAIAgentsContextInterceptor()]
+        client_config["interceptors"] = [interceptor]
         client = Client(**client_config)
 
         task_queue = f"test-{uuid.uuid4()}"

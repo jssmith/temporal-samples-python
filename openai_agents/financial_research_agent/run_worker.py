@@ -39,11 +39,13 @@ def setup_otel_tracing() -> trace_sdk.TracerProvider:
 async def main():
     setup_otel_tracing()
 
+    # Use Plugin for model activities and proper sandbox handling
+    # Our custom plugin uses OpenAIAgentsContextInterceptor for cleaner traces
+    plugin = OpenAIAgentsPluginNoTemporalSpans()
+
     client = await Client.connect(
         "localhost:7233",
-        plugins=[
-            OpenAIAgentsPluginNoTemporalSpans(),  # Context propagation without temporal:* spans
-        ],
+        plugins=[plugin],
     )
 
     worker = Worker(
