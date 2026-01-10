@@ -23,6 +23,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from temporalio import activity, workflow
 from temporalio.client import Client
+from temporalio.contrib.openai_agents import workflow_span
 from temporalio.contrib.opentelemetry import TracingInterceptor
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
@@ -64,11 +65,9 @@ class WorkflowWithTrace:
 
     @workflow.run
     async def run(self, query: str) -> str:
-        # Use OTEL tracer for proper context propagation
-        # Note: workflow code runs in sandbox, but TemporalAwareContext makes this work
-        otel_tracer = trace.get_tracer(__name__)
-        with otel_tracer.start_as_current_span("test_trace") as span:
-            span.set_attribute("query", query)
+        # Use workflow_span helper for replay-safe span creation
+        # This automatically skips span creation during replay to avoid duplication
+        with workflow_span("test_trace", query=query):
             result1 = await workflow.execute_activity(
                 simple_activity,
                 "step1",
@@ -397,6 +396,113 @@ class TestSpanCounts:
             f"Expected at most {max_expected_spans} spans, but got {len(spans)}. "
             f"This may indicate span duplication. "
             f"Span names: {[s.name for s in spans]}"
+        )
+
+
+class TestReplayBehavior:
+    """Tests that verify correct span behavior during workflow replay.
+
+    When max_cached_workflows=0, every workflow task causes a full replay.
+    This tests that spans are not duplicated during replay.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_span_duplication_with_replay(self, tracing: InMemorySpanExporter):
+        """
+        With max_cached_workflows=0, workflow code replays on every task.
+        Spans should NOT be duplicated during replay.
+        """
+        async with await WorkflowEnvironment.start_local() as env:
+            interceptor = TracingInterceptor(create_spans=False)
+            client_config = env.client.config()
+            client_config["interceptors"] = [interceptor]
+            client = Client(**client_config)
+
+            task_queue = f"test-replay-{uuid.uuid4()}"
+
+            # max_cached_workflows=0 forces replay on every workflow task
+            async with Worker(
+                client,
+                task_queue=task_queue,
+                workflows=[WorkflowWithTrace],
+                activities=[simple_activity],
+                interceptors=[interceptor],
+                workflow_runner=UnsandboxedWorkflowRunner(),
+                max_cached_workflows=0,  # Force replay
+            ):
+                result = await client.execute_workflow(
+                    WorkflowWithTrace.run,
+                    "test",
+                    id=f"wf-replay-{uuid.uuid4()}",
+                    task_queue=task_queue,
+                )
+
+        assert "done:" in result
+
+        await asyncio.sleep(0.3)
+        spans = tracing.get_finished_spans()
+
+        # Count spans by name
+        span_counts = {}
+        for s in spans:
+            span_counts[s.name] = span_counts.get(s.name, 0) + 1
+
+        print(f"\nSpan counts: {span_counts}")
+        print(f"Total spans: {len(spans)}")
+
+        # Each span name should appear exactly once
+        # If replay causes duplication, we'd see counts > 1
+        duplicated = {name: count for name, count in span_counts.items() if count > 1}
+
+        assert not duplicated, (
+            f"Span duplication detected during replay! "
+            f"Duplicated spans: {duplicated}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_workflow_with_many_activities_replay(self, tracing: InMemorySpanExporter):
+        """
+        Test replay with multiple activities - each activity completion triggers
+        a new workflow task, causing replay each time with max_cached_workflows=0.
+        """
+        async with await WorkflowEnvironment.start_local() as env:
+            interceptor = TracingInterceptor(create_spans=False)
+            client_config = env.client.config()
+            client_config["interceptors"] = [interceptor]
+            client = Client(**client_config)
+
+            task_queue = f"test-multi-replay-{uuid.uuid4()}"
+
+            async with Worker(
+                client,
+                task_queue=task_queue,
+                workflows=[WorkflowWithMultipleActivities],
+                activities=[simple_activity],
+                interceptors=[interceptor],
+                workflow_runner=UnsandboxedWorkflowRunner(),
+                max_cached_workflows=0,  # Force replay on every task
+            ):
+                # 5 activities = 5 workflow tasks = 5 replays
+                result = await client.execute_workflow(
+                    WorkflowWithMultipleActivities.run,
+                    5,
+                    id=f"wf-multi-replay-{uuid.uuid4()}",
+                    task_queue=task_queue,
+                )
+
+        await asyncio.sleep(0.3)
+        spans = tracing.get_finished_spans()
+
+        # Count work_ spans - should be exactly 5 (one per activity)
+        work_spans = [s for s in spans if s.name.startswith("work_")]
+
+        print(f"\nWork spans: {[s.name for s in work_spans]}")
+        print(f"Total spans: {len(spans)}")
+
+        assert len(work_spans) == 5, (
+            f"Expected exactly 5 work spans, got {len(work_spans)}. "
+            f"Replay may be causing duplication. "
+            f"Work spans: {[s.name for s in work_spans]}"
         )
 
 
