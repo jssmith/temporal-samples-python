@@ -1,16 +1,39 @@
 #!/usr/bin/env python3
+"""Run the financial research worker with OpenTelemetry tracing."""
 
 import asyncio
+import os
+
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from temporalio.client import Client
 from temporalio.worker import Worker
-from temporalio.contrib.openai_agents import OpenAIAgentsPlugin
+from temporalio.contrib.openai_agents import OpenAIAgentsPlugin, OtelTracingPlugin
 
-from openai_agents.financial_research_agent.otel_config import create_tracer_provider, get_otlp_endpoint
-from openai_agents.financial_research_agent.otel_tracing_plugin import OtelTracingPlugin
 from openai_agents.financial_research_agent.workflows.financial_research_workflow import (
     FinancialResearchWorkflow,
 )
+
+# Default OTLP endpoint - can be overridden via OTEL_EXPORTER_OTLP_ENDPOINT
+DEFAULT_OTLP_ENDPOINT = "http://localhost:4317"
+
+
+def get_otlp_endpoint() -> str:
+    """Get OTLP endpoint from environment or use default."""
+    return os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", DEFAULT_OTLP_ENDPOINT)
+
+
+def create_tracer_provider(service_name: str) -> TracerProvider:
+    """Create a TracerProvider configured for OTLP export."""
+    resource = Resource.create(attributes={"service.name": service_name})
+    tracer_provider = TracerProvider(resource=resource)
+    tracer_provider.add_span_processor(
+        SimpleSpanProcessor(OTLPSpanExporter(endpoint=get_otlp_endpoint(), insecure=True))
+    )
+    return tracer_provider
 
 
 async def main():
@@ -25,7 +48,7 @@ async def main():
 
     client = await Client.connect(
         "localhost:7233",
-        plugins=[openai_plugin, otel_plugin],  # Order matters: otel_plugin replaces interceptors
+        plugins=[openai_plugin, otel_plugin],
     )
 
     worker = Worker(

@@ -73,6 +73,9 @@ cloud-export-to-parquet = [
 ]
 
 
+[tool.uv.sources]
+temporalio = { path = "../sdk-python", editable = true }
+
 [tool.hatch.build.targets.sdist]
 include = ["./**/*.py"]
 

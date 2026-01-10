@@ -6,6 +6,8 @@ when running multiple test files together.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
@@ -14,6 +16,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
+
+# Ensure TemporalAwareContext is used for OTEL context
+# This makes get_current_span() work inside Temporal's sandbox
+if "OTEL_PYTHON_CONTEXT" not in os.environ:
+    os.environ["OTEL_PYTHON_CONTEXT"] = "temporal_aware_context"
 
 
 # Global provider/exporter - only initialized once per process

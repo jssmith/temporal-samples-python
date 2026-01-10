@@ -20,6 +20,7 @@ from datetime import timedelta
 
 import pytest
 from agents import Agent, Runner, custom_span, trace as agents_trace
+from opentelemetry import trace
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
@@ -30,6 +31,9 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
 # Uses shared fixtures from conftest.py (tracing)
+
+# OTEL tracer for activities (custom_span requires agents_trace context which doesn't propagate)
+tracer = trace.get_tracer(__name__)
 
 # Skip all tests if no API key
 pytestmark = pytest.mark.skipif(
@@ -60,7 +64,9 @@ def dump_spans(spans: list[ReadableSpan], title: str = "Spans") -> None:
 async def run_agent_activity(prompt: str) -> str:
     """Activity that runs an agent and returns the result."""
     agent = create_test_agent()
-    with custom_span(name="activity_agent_wrapper", data={"prompt": prompt}):
+    # Use OTEL tracer instead of custom_span (which requires agents_trace context)
+    with tracer.start_as_current_span("activity_agent_wrapper") as span:
+        span.set_attribute("prompt", prompt)
         result = await Runner.run(agent, prompt)
         return result.final_output
 

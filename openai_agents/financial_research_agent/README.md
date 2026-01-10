@@ -84,10 +84,10 @@ Uses a **two-plugin architecture** for clean separation of concerns:
 
 ### Key Components
 
-| File | Purpose |
-|------|---------|
-| `otel_tracing_plugin.py` | Plugin that provides OTEL context propagation |
-| `otel_config.py` | Shared OTEL configuration |
+| Component | Source | Purpose |
+|-----------|--------|---------|
+| `OtelTracingPlugin` | `temporalio.contrib.openai_agents` | Plugin that provides OTEL context propagation |
+| `OpenAIAgentsPlugin` | `temporalio.contrib.openai_agents` | Plugin for OpenAI Agents SDK integration |
 
 ### How It Works
 
