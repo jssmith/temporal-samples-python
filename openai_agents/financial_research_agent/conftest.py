@@ -1,12 +1,6 @@
-"""Shared fixtures for financial_research_agent tests.
-
-This module provides shared OTEL tracing setup to avoid TracerProvider conflicts
-when running multiple test files together.
-"""
+"""Shared fixtures for financial_research_agent tests."""
 
 from __future__ import annotations
-
-import os
 
 import pytest
 from opentelemetry import trace
@@ -16,11 +10,6 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
-
-# Ensure TemporalAwareContext is used for OTEL context
-# This makes get_current_span() work inside Temporal's sandbox
-if "OTEL_PYTHON_CONTEXT" not in os.environ:
-    os.environ["OTEL_PYTHON_CONTEXT"] = "temporal_aware_context"
 
 
 # Global provider/exporter - only initialized once per process
@@ -42,7 +31,6 @@ def _setup_shared_tracing() -> tuple[TracerProvider, InMemorySpanExporter]:
         trace.set_tracer_provider(_provider)
 
     if not _instrumented:
-        # Use the upstream instrumentor (which now respects parent context)
         OpenAIAgentsInstrumentor().instrument(tracer_provider=_provider)
         _instrumented = True
 

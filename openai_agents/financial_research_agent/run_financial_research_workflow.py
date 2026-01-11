@@ -12,7 +12,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from temporalio.client import Client
-from temporalio.contrib.openai_agents import OpenAIAgentsPlugin, OtelTracingPlugin
+from temporalio.contrib.openai_agents import OpenAIAgentsPlugin
+from temporalio.contrib.opentelemetry import OtelTracingPlugin
 
 from openai_agents.financial_research_agent.workflows.financial_research_workflow import (
     FinancialResearchWorkflow,

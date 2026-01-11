@@ -11,7 +11,9 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from temporalio.client import Client
 from temporalio.worker import Worker
-from temporalio.contrib.openai_agents import OpenAIAgentsPlugin, OtelTracingPlugin
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner
+from temporalio.contrib.openai_agents import OpenAIAgentsPlugin, setup_tracing
+from temporalio.contrib.opentelemetry import OtelTracingPlugin, ReplayFilteringSpanProcessor
 
 from openai_agents.financial_research_agent.workflows.financial_research_workflow import (
     FinancialResearchWorkflow,
@@ -27,17 +29,24 @@ def get_otlp_endpoint() -> str:
 
 
 def create_tracer_provider(service_name: str) -> TracerProvider:
-    """Create a TracerProvider configured for OTLP export."""
+    """Create a TracerProvider configured for OTLP export with replay filtering."""
     resource = Resource.create(attributes={"service.name": service_name})
     tracer_provider = TracerProvider(resource=resource)
+    # Wrap the span processor with ReplayFilteringSpanProcessor to prevent
+    # duplicate spans during workflow replay
     tracer_provider.add_span_processor(
-        SimpleSpanProcessor(OTLPSpanExporter(endpoint=get_otlp_endpoint(), insecure=True))
+        ReplayFilteringSpanProcessor(
+            SimpleSpanProcessor(OTLPSpanExporter(endpoint=get_otlp_endpoint(), insecure=True))
+        )
     )
     return tracer_provider
 
 
 async def main():
     tracer_provider = create_tracer_provider("financial-research-agent-worker")
+
+    # Set up OpenAI Agents tracing with OpenInference
+    setup_tracing(tracer_provider)
 
     # Two-plugin architecture:
     # 1. OpenAIAgentsPlugin - activities, data converter, sandbox, model params
@@ -51,10 +60,15 @@ async def main():
         plugins=[openai_plugin, otel_plugin],
     )
 
+    # Configure worker with sandbox passthrough for opentelemetry
+    # This is required for OTEL context to propagate correctly inside workflows
     worker = Worker(
         client,
         task_queue="financial-research-task-queue",
         workflows=[FinancialResearchWorkflow],
+        workflow_runner=SandboxedWorkflowRunner(
+            restrictions=otel_plugin.sandbox_restrictions
+        ),
     )
 
     print("Starting financial research worker with OpenTelemetry tracing...")
