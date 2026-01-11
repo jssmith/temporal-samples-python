@@ -2,40 +2,17 @@
 """Run the financial research workflow client with OpenTelemetry tracing."""
 
 import asyncio
-import os
 
 from agents import trace as agents_trace
-
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from temporalio.client import Client
 from temporalio.contrib.openai_agents import OpenAIAgentsPlugin
 from temporalio.contrib.opentelemetry import OtelTracingPlugin
 
+from openai_agents.financial_research_agent.tracing_setup import create_tracer_provider
 from openai_agents.financial_research_agent.workflows.financial_research_workflow import (
     FinancialResearchWorkflow,
 )
-
-# Default OTLP endpoint - can be overridden via OTEL_EXPORTER_OTLP_ENDPOINT
-DEFAULT_OTLP_ENDPOINT = "http://localhost:4317"
-
-
-def get_otlp_endpoint() -> str:
-    """Get OTLP endpoint from environment or use default."""
-    return os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", DEFAULT_OTLP_ENDPOINT)
-
-
-def create_tracer_provider(service_name: str) -> TracerProvider:
-    """Create a TracerProvider configured for OTLP export."""
-    resource = Resource.create(attributes={"service.name": service_name})
-    tracer_provider = TracerProvider(resource=resource)
-    tracer_provider.add_span_processor(
-        SimpleSpanProcessor(OTLPSpanExporter(endpoint=get_otlp_endpoint(), insecure=True))
-    )
-    return tracer_provider
 
 
 async def main():
@@ -48,7 +25,7 @@ async def main():
         print(f"Using default query: {query}")
 
     # Two-plugin architecture:
-    # 1. OpenAIAgentsPlugin - data converter (client side), create_spans=False
+    # 1. OpenAIAgentsPlugin - data converter (client side)
     # 2. OtelTracingPlugin - OTEL context propagation
     openai_plugin = OpenAIAgentsPlugin(create_spans=False)
     otel_plugin = OtelTracingPlugin(tracer_provider=tracer_provider)
