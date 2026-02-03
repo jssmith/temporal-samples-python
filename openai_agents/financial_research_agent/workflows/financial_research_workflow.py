@@ -1,3 +1,4 @@
+from agents import trace
 from temporalio import workflow
 
 from openai_agents.financial_research_agent.financial_research_manager import (
@@ -9,5 +10,6 @@ from openai_agents.financial_research_agent.financial_research_manager import (
 class FinancialResearchWorkflow:
     @workflow.run
     async def run(self, query: str) -> str:
-        manager = FinancialResearchManager()
-        return await manager.run(query)
+        with trace("Financial research", group_id=workflow.info().workflow_id):
+            manager = FinancialResearchManager()
+            return await manager.run(query)

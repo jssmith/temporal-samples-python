@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 
-from agents import RunConfig, Runner, RunResult, custom_span, trace
+from agents import RunConfig, Runner, RunResult, custom_span
 from temporalio import workflow
 
 from openai_agents.financial_research_agent.agents.financials_agent import (
@@ -48,11 +48,10 @@ class FinancialResearchManager:
         self.verifier_agent = new_verifier_agent()
 
     async def run(self, query: str) -> str:
-        with trace("Financial research trace"):
-            search_plan = await self._plan_searches(query)
-            search_results = await self._perform_searches(search_plan)
-            report = await self._write_report(query, search_results)
-            verification = await self._verify_report(report)
+        search_plan = await self._plan_searches(query)
+        search_results = await self._perform_searches(search_plan)
+        report = await self._write_report(query, search_results)
+        verification = await self._verify_report(report)
 
         # Return formatted output
         result = f"""=====REPORT=====
